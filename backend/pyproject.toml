@@ -1,0 +1,30 @@
+# backend/pyproject.toml
+[project]
+name = "factory-v4-backend"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.135.0",
+    "uvicorn[standard]>=0.42.0",
+    "sqlalchemy>=2.0.48",
+    "aiosqlite>=0.21.0",
+    "pydantic>=2.12.0",
+    "pydantic-settings>=2.13.0",
+    "langgraph>=0.4.0",
+    "langgraph-checkpoint-sqlite>=2.0.0",
+    "python-telegram-bot>=21.0",
+    "apscheduler>=3.10.0",
+    "sse-starlette>=2.0.0",
+    "python-dotenv>=1.1.0",
+    "uuid6>=2024.7.10",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24.0",
+    "httpx>=0.28.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

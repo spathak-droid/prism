@@ -1,0 +1,9 @@
+data/
+node_modules/
+.next/
+__pycache__/
+*.pyc
+.env
+.venv/
+*.db
+tsconfig.tsbuildinfo
