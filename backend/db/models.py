@@ -126,7 +126,7 @@ class Message(Base):
     project_id = Column(Text, nullable=True)
     workflow_execution_id = Column(Text, nullable=True)
     channel = Column(Text, nullable=False, default="internal")
-    metadata = Column(Text, nullable=False, default="{}")
+    meta = Column("metadata", Text, nullable=False, default="{}")
     timestamp = Column(Text, nullable=False, default=utcnow)
 
 
