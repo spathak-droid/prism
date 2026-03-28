@@ -34,6 +34,7 @@ from routes.messages import router as messages_router
 from routes.approvals import router as approvals_router
 from routes.streaming import router as streaming_router
 from routes.utils import router as utils_router
+from routes.workflows import router as workflows_router
 
 app.include_router(agents_router)
 app.include_router(projects_router)
@@ -41,3 +42,4 @@ app.include_router(messages_router)
 app.include_router(approvals_router)
 app.include_router(streaming_router)
 app.include_router(utils_router)
+app.include_router(workflows_router)
