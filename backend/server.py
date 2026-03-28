@@ -11,11 +11,16 @@ load_dotenv()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    print("[factory-v4] Database initialized")
+    print('[factory-v4] Database initialized')
+    from services.scheduler import agent_scheduler
+    agent_scheduler.start()
+    agent_scheduler.load_all_schedules()
+    print('[factory-v4] Scheduler started')
     yield
+    agent_scheduler.stop()
     from services.goose_manager import goose_manager
     goose_manager.kill_all()
-    print("[factory-v4] Shutting down")
+    print('[factory-v4] Shutting down')
 
 
 app = FastAPI(title="Factory v4", lifespan=lifespan)
