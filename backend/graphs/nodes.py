@@ -300,6 +300,143 @@ async def reviewer_node(state: dict) -> dict:
     return {"ticket_results": new_results, "review_cycles": review_cycles}
 
 
+async def researcher_node(state: dict) -> dict:
+    """LangGraph node: Researcher agent."""
+    from prompts.researcher import get_system_prompt
+
+    target_dir = state["target_dir"]
+    complexity = state["complexity"]
+    brief = state["brief"]
+
+    update_phase(target_dir, "researcher", {"status": "in_progress", "started_at": utcnow()})
+    await event_bus.emit("project:update", {
+        "project_id": state["project_id"], "phase": "researcher", "status": "in_progress",
+    })
+
+    system_prompt = get_system_prompt(complexity, target_dir)
+
+    message = (
+        f"Project brief: {brief}\n"
+        f"Target directory: {target_dir}\n"
+        f"Complexity: {complexity}\n\n"
+        f"Research the technology landscape for this project. "
+        f"Return a ResearchOutput JSON block at the end of your response."
+    )
+
+    response = await run_goose_agent(
+        agent_id=f"researcher-{state['project_id'][:8]}",
+        agent_name="Researcher",
+        system_prompt=system_prompt,
+        message=message,
+        target_dir=target_dir,
+    )
+
+    json_str = extract_json_block(response)
+    research = None
+    if json_str:
+        try:
+            from contracts.schemas import ResearchOutput
+            research_data = json.loads(json_str)
+            research = ResearchOutput(**research_data)
+        except Exception as e:
+            print(f"[researcher_node] Failed to parse ResearchOutput: {e}")
+
+    update_phase(target_dir, "researcher", {"status": "completed", "completed_at": utcnow()})
+    await event_bus.emit("project:update", {
+        "project_id": state["project_id"], "phase": "researcher", "status": "completed",
+    })
+
+    return {
+        "research": research.model_dump() if research else None,
+        "status": "planning",
+    }
+
+
+async def deployer_node(state: dict) -> dict:
+    """LangGraph node: Deployer agent."""
+    from prompts.deployer import get_system_prompt
+
+    target_dir = state["target_dir"]
+    complexity = state["complexity"]
+
+    update_phase(target_dir, "deployer", {"status": "in_progress", "started_at": utcnow()})
+    await event_bus.emit("project:update", {
+        "project_id": state["project_id"], "phase": "deployer", "status": "in_progress",
+    })
+
+    system_prompt = get_system_prompt(complexity, target_dir)
+
+    message = (
+        f"Target directory: {target_dir}\n\n"
+        f"Run deployment validation: build the project, run all tests, "
+        f"check for lint/type errors, and validate the deployment. "
+        f"Return a DeployResult JSON block at the end of your response."
+    )
+
+    response = await run_goose_agent(
+        agent_id=f"deployer-{state['project_id'][:8]}",
+        agent_name="Deployer",
+        system_prompt=system_prompt,
+        message=message,
+        target_dir=target_dir,
+    )
+
+    json_str = extract_json_block(response)
+    deploy_result = None
+    if json_str:
+        try:
+            from contracts.schemas import DeployResult
+            deploy_result = DeployResult(**json.loads(json_str))
+        except Exception as e:
+            print(f"[deployer_node] Failed to parse DeployResult: {e}")
+
+    update_phase(target_dir, "deployer", {"status": "completed", "completed_at": utcnow()})
+    await event_bus.emit("project:update", {
+        "project_id": state["project_id"], "phase": "deployer", "status": "completed",
+    })
+
+    return {
+        "deploy_result": deploy_result.model_dump() if deploy_result else None,
+        "status": "completed",
+    }
+
+
+async def approval_gate_node(state: dict) -> dict:
+    """Create approval gate and pause for human review."""
+    from db.database import SessionLocal
+    from db.models import ApprovalGate, new_id
+    import json as _json
+
+    db = SessionLocal()
+    try:
+        gate = ApprovalGate(
+            id=new_id(),
+            project_id=state["project_id"],
+            node_id="approval_gate",
+            type="plan_approval",
+            status="pending",
+            payload=_json.dumps({
+                "brief": state.get("brief", ""),
+                "complexity": state.get("complexity", ""),
+                "ticket_count": len(state.get("tickets", [])),
+                "plan_summary": str(state.get("plan", {}))[:500],
+            }),
+            created_at=utcnow(),
+        )
+        db.add(gate)
+        db.commit()
+    finally:
+        db.close()
+
+    await event_bus.emit("approval:required", {
+        "project_id": state["project_id"],
+        "gate_id": gate.id,
+        "type": "plan_approval",
+    })
+
+    return {"status": "awaiting_approval", "approved": True}
+
+
 def check_review_outcome(state: dict) -> str:
     """Router: check if all tickets passed review."""
     ticket_results = state.get("ticket_results", {})

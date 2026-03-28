@@ -113,9 +113,12 @@ async def _run_factory_pipeline(project_id: str, brief: str, target_dir: str, co
         if complexity == "simple":
             from graphs.factory_simple import get_simple_graph_runner
             graph = await get_simple_graph_runner()
+        elif complexity == "medium":
+            from graphs.factory_medium import get_medium_graph_runner
+            graph = await get_medium_graph_runner()
         else:
-            from graphs.factory_simple import get_simple_graph_runner
-            graph = await get_simple_graph_runner()
+            from graphs.factory_complex import get_complex_graph_runner
+            graph = await get_complex_graph_runner()
 
         initial_state = {
             "project_id": project_id,
