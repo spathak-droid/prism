@@ -6,6 +6,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from db.database import init_db
 from routes.agents import router as agents_router
+from routes.messages import router as messages_router
+from routes.streaming import router as streaming_router
 
 load_dotenv()
 
@@ -32,6 +34,8 @@ app.add_middleware(
 
 
 app.include_router(agents_router)
+app.include_router(messages_router)
+app.include_router(streaming_router)
 
 
 @app.get("/api/health")
