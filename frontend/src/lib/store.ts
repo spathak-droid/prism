@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import { apiFetch } from './utils'
 
 // Types
-interface Agent {
+export interface Agent {
   id: string
   name: string
   role: string
@@ -23,7 +23,7 @@ interface Agent {
   updatedAt: string
 }
 
-interface Project {
+export interface Project {
   id: string
   name: string
   brief: string
@@ -39,7 +39,7 @@ interface Project {
   updatedAt: string
 }
 
-interface Message {
+export interface Message {
   id: string
   fromAgentId: string | null
   toAgentId: string | null
@@ -51,7 +51,7 @@ interface Message {
   timestamp: string
 }
 
-interface Workflow {
+export interface Workflow {
   id: string
   name: string
   description: string
@@ -63,7 +63,7 @@ interface Workflow {
   updatedAt: string
 }
 
-interface SSEEvent {
+export interface SSEEvent {
   type: string
   agent_id?: string
   tool_name?: string
@@ -75,21 +75,34 @@ interface SSEEvent {
 // Agent Store
 interface AgentStore {
   agents: Agent[]
+  selectedAgent: Agent | null
   loading: boolean
   fetchAgents: () => Promise<void>
+  fetchAgent: (id: string) => Promise<void>
   createAgent: (data: Partial<Agent>) => Promise<Agent>
   updateAgent: (id: string, data: Partial<Agent>) => Promise<void>
   deleteAgent: (id: string) => Promise<void>
+  setSelectedAgent: (agent: Agent | null) => void
 }
 
 export const useAgentStore = create<AgentStore>((set, get) => ({
   agents: [],
+  selectedAgent: null,
   loading: false,
   fetchAgents: async () => {
     set({ loading: true })
     try {
       const agents = await apiFetch('/api/agents')
       set({ agents, loading: false })
+    } catch {
+      set({ loading: false })
+    }
+  },
+  fetchAgent: async (id: string) => {
+    set({ loading: true })
+    try {
+      const agent = await apiFetch(`/api/agents/${id}`)
+      set({ selectedAgent: agent, loading: false })
     } catch {
       set({ loading: false })
     }
@@ -113,6 +126,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     await apiFetch(`/api/agents/${id}`, { method: 'DELETE' })
     set({ agents: get().agents.filter(a => a.id !== id) })
   },
+  setSelectedAgent: (agent) => set({ selectedAgent: agent }),
 }))
 
 // Project Store
@@ -155,15 +169,19 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
 // Message Store
 interface MessageStore {
   messages: Message[]
-  fetchMessages: (agentId?: string) => Promise<void>
+  fetchMessages: (agentId?: string, limit?: number) => Promise<void>
   sendMessage: (agentId: string, content: string) => Promise<void>
+  clearMessages: () => void
 }
 
 export const useMessageStore = create<MessageStore>((set, get) => ({
   messages: [],
-  fetchMessages: async (agentId) => {
-    const params = agentId ? `?agentId=${agentId}` : ''
-    const messages = await apiFetch(`/api/messages${params}`)
+  fetchMessages: async (agentId, limit) => {
+    const params = new URLSearchParams()
+    if (agentId) params.set('agentId', agentId)
+    if (limit !== undefined) params.set('limit', String(limit))
+    const query = params.toString() ? `?${params.toString()}` : ''
+    const messages = await apiFetch(`/api/messages${query}`)
     set({ messages })
   },
   sendMessage: async (agentId, content) => {
@@ -173,6 +191,7 @@ export const useMessageStore = create<MessageStore>((set, get) => ({
     })
     await get().fetchMessages(agentId)
   },
+  clearMessages: () => set({ messages: [] }),
 }))
 
 // Monitor Store
@@ -181,6 +200,7 @@ interface MonitorStore {
   connected: boolean
   addEvent: (event: SSEEvent) => void
   clearEvents: () => void
+  setConnected: (connected: boolean) => void
 }
 
 export const useMonitorStore = create<MonitorStore>((set, get) => ({
@@ -191,4 +211,5 @@ export const useMonitorStore = create<MonitorStore>((set, get) => ({
     set({ events })
   },
   clearEvents: () => set({ events: [] }),
+  setConnected: (connected) => set({ connected }),
 }))
