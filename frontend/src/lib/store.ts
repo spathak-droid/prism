@@ -134,15 +134,20 @@ interface ProjectStore {
   projects: Project[]
   currentProject: Project | null
   loading: boolean
+  pendingProject: { name: string; brief: string; targetDir: string } | null
   fetchProjects: () => Promise<void>
   fetchProject: (id: string) => Promise<void>
   createProject: (data: { name: string; brief: string; targetDir: string; stages?: string[] }) => Promise<Project>
+  deleteProject: (id: string) => Promise<void>
+  setPendingProject: (data: { name: string; brief: string; targetDir: string }) => void
+  clearPendingProject: () => void
 }
 
 export const useProjectStore = create<ProjectStore>((set, get) => ({
   projects: [],
   currentProject: null,
   loading: false,
+  pendingProject: null,
   fetchProjects: async () => {
     set({ loading: true })
     try {
@@ -164,6 +169,12 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     set({ projects: [...get().projects, project] })
     return project
   },
+  deleteProject: async (id) => {
+    await apiFetch(`/api/projects/${id}`, { method: 'DELETE' })
+    set({ projects: get().projects.filter((p) => p.id !== id) })
+  },
+  setPendingProject: (data) => set({ pendingProject: data }),
+  clearPendingProject: () => set({ pendingProject: null }),
 }))
 
 // Message Store
