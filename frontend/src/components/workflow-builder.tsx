@@ -32,8 +32,9 @@ import {
 import { Card } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
-import { Bot, Play, Save, FileDown, Trash2 } from "lucide-react";
+import { Bot, Play, Save, FileDown, Trash2, FolderOpen } from "lucide-react";
 import { v4 as uuidv4 } from "uuid";
+import { toast } from "sonner";
 
 const nodeTypes: NodeTypes = {
   agentNode: AgentNode,
@@ -43,6 +44,35 @@ const nodeTypes: NodeTypes = {
 const edgeTypes: EdgeTypes = {
   conditionEdge: ConditionEdge,
 };
+
+const PIPELINE_STAGES: AgentItem[] = [
+  { id: "stage-researcher", name: "Researcher", role: "researcher", status: "idle" },
+  { id: "stage-planner", name: "Planner", role: "planner", status: "idle" },
+  { id: "stage-approval", name: "Approval", role: "approval", status: "idle" },
+  { id: "stage-builder", name: "Builder", role: "coder", status: "idle" },
+  { id: "stage-reviewer", name: "Reviewer", role: "reviewer", status: "idle" },
+  { id: "stage-deployer", name: "Deployer", role: "deployer", status: "idle" },
+];
+
+const LABEL_TO_STAGE_KEY: Record<string, string> = {
+  Researcher: "researcher",
+  Planner: "planner",
+  Approval: "approval",
+  Builder: "coder",
+  Reviewer: "reviewer",
+  Deployer: "deployer",
+};
+
+const DEFAULT_PROJECT_NODES: Node<AgentNodeData>[] = [
+  { id: "node-planner", type: "agentNode", position: { x: 80, y: 60 }, data: { agentId: null, label: "Planner", status: "idle" } },
+  { id: "node-builder", type: "agentNode", position: { x: 360, y: 60 }, data: { agentId: null, label: "Builder", status: "idle" } },
+  { id: "node-reviewer", type: "agentNode", position: { x: 640, y: 60 }, data: { agentId: null, label: "Reviewer", status: "idle" } },
+];
+
+const DEFAULT_PROJECT_EDGES: Edge<ConditionEdgeData>[] = [
+  { id: "edge-p-b", source: "node-planner", target: "node-builder", type: "conditionEdge", animated: true, data: { condition: "always" } },
+  { id: "edge-b-r", source: "node-builder", target: "node-reviewer", type: "conditionEdge", animated: true, data: { condition: "always" } },
+];
 
 interface AgentItem {
   id: string;
@@ -79,9 +109,13 @@ interface WorkflowBuilderProps {
     nodes: Node<AgentNodeData>[];
     edges: Edge<ConditionEdgeData>[];
   }) => Promise<void>;
-  onExecute: (input: string) => Promise<void>;
+  onExecute: (input: string, cwd?: string) => Promise<void>;
   saving: boolean;
   executing: boolean;
+  mode?: "workflow" | "project";
+  projectName?: string;
+  onCreateProject?: (stages: string[]) => Promise<void>;
+  creatingProject?: boolean;
 }
 
 export function WorkflowBuilder({
@@ -92,16 +126,31 @@ export function WorkflowBuilder({
   onExecute,
   saving,
   executing,
+  mode = "workflow",
+  projectName,
+  onCreateProject,
+  creatingProject = false,
 }: WorkflowBuilderProps) {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const [reactFlowInstance, setReactFlowInstance] = useState<ReactFlowInstance | null>(null);
-  const [nodes, setNodes, onNodesChange] = useNodesState(workflow?.nodes || []);
-  const [edges, setEdges, onEdgesChange] = useEdgesState(workflow?.edges || []);
+
+  const isProjectMode = mode === "project";
+
+  const initialNodes = isProjectMode && (!workflow?.nodes || workflow.nodes.length === 0)
+    ? DEFAULT_PROJECT_NODES
+    : (workflow?.nodes || []);
+  const initialEdges = isProjectMode && (!workflow?.edges || workflow.edges.length === 0)
+    ? DEFAULT_PROJECT_EDGES
+    : (workflow?.edges || []);
+
+  const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
+  const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
   const [workflowName, setWorkflowName] = useState(workflow?.name || "New Workflow");
   const [workflowDescription] = useState(workflow?.description || "");
   const [selectedEdge, setSelectedEdge] = useState<string | null>(null);
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
   const [taskInput, setTaskInput] = useState("");
+  const [workingDir, setWorkingDir] = useState("");
 
   const onConnect = useCallback(
     (params: Connection) => {
@@ -133,10 +182,9 @@ export function WorkflowBuilder({
 
       if (!reactFlowInstance || !reactFlowWrapper.current) return;
 
-      const reactFlowBounds = reactFlowWrapper.current.getBoundingClientRect();
-      const position = reactFlowInstance.project({
-        x: event.clientX - reactFlowBounds.left,
-        y: event.clientY - reactFlowBounds.top,
+      const position = reactFlowInstance.screenToFlowPosition({
+        x: event.clientX,
+        y: event.clientY,
       });
 
       const newNode: Node<AgentNodeData> = {
@@ -221,45 +269,141 @@ export function WorkflowBuilder({
 
   const selectedEdgeData = edges.find((e) => e.id === selectedEdge);
 
+  const extractStagesFromNodes = useCallback((): string[] => {
+    const adj: Record<string, string[]> = {};
+    const inDegree: Record<string, number> = {};
+    for (const node of nodes) {
+      adj[node.id] = [];
+      inDegree[node.id] = 0;
+    }
+    for (const edge of edges) {
+      if (adj[edge.source]) {
+        adj[edge.source].push(edge.target);
+        inDegree[edge.target] = (inDegree[edge.target] || 0) + 1;
+      }
+    }
+    const queue = Object.keys(inDegree).filter((id) => inDegree[id] === 0);
+    const sorted: string[] = [];
+    while (queue.length > 0) {
+      const nodeId = queue.shift()!;
+      sorted.push(nodeId);
+      for (const neighbor of (adj[nodeId] || [])) {
+        inDegree[neighbor]--;
+        if (inDegree[neighbor] === 0) queue.push(neighbor);
+      }
+    }
+    return sorted
+      .map((nodeId) => {
+        const node = nodes.find((n) => n.id === nodeId);
+        if (!node) return null;
+        const label = (node.data as AgentNodeData).label;
+        return LABEL_TO_STAGE_KEY[label] || null;
+      })
+      .filter((s): s is string => s !== null);
+  }, [nodes, edges]);
+
+  const handleCreateProject = useCallback(async () => {
+    if (!onCreateProject) return;
+    const stages = extractStagesFromNodes();
+    if (!stages.includes("planner") || !stages.includes("coder")) {
+      toast.error("Pipeline must include Planner and Builder stages.");
+      return;
+    }
+    await onCreateProject(stages);
+  }, [onCreateProject, extractStagesFromNodes]);
+
+  // Track which stages are already on canvas (for project mode)
+  const stagesOnCanvas = React.useMemo(() => {
+    if (!isProjectMode) return new Set<string>();
+    return new Set(
+      nodes.map((n) => (n.data as AgentNodeData).label)
+    );
+  }, [isProjectMode, nodes]);
+
   return (
     <div className="flex h-full">
       {/* Sidebar - Agent Panel */}
       <div className="w-56 shrink-0 border-r bg-card p-3 flex flex-col gap-3 overflow-y-auto">
         <div>
-          <h3 className="text-sm font-medium mb-2">Agents</h3>
+          <h3 className="text-sm font-medium mb-2">{isProjectMode ? "Pipeline Stages" : "Agents"}</h3>
           <p className="text-xs text-muted-foreground mb-2">
-            Drag agents onto the canvas
+            {isProjectMode ? "Drag stages onto the canvas" : "Drag agents onto the canvas"}
           </p>
           <div className="space-y-1.5">
-            {agents.length === 0 && (
-              <p className="text-xs text-muted-foreground py-2">
-                No agents available. Create agents first.
-              </p>
-            )}
-            {agents.map((agent) => (
-              <div
-                key={agent.id}
-                draggable
-                onDragStart={(e) => {
-                  e.dataTransfer.setData(
-                    "application/agentforge-agent",
-                    JSON.stringify(agent)
+            {isProjectMode ? (
+              <>
+                {PIPELINE_STAGES.map((stage) => {
+                  const alreadyAdded = stagesOnCanvas.has(stage.name);
+                  return (
+                    <div
+                      key={stage.id}
+                      draggable={!alreadyAdded}
+                      onDragStart={(e) => {
+                        if (alreadyAdded) {
+                          e.preventDefault();
+                          return;
+                        }
+                        e.dataTransfer.setData(
+                          "application/agentforge-agent",
+                          JSON.stringify(stage)
+                        );
+                        e.dataTransfer.effectAllowed = "move";
+                      }}
+                      className={`flex items-center gap-2 rounded-md border bg-background p-2 transition-colors ${
+                        alreadyAdded
+                          ? "opacity-50 cursor-not-allowed"
+                          : "cursor-grab active:cursor-grabbing hover:bg-accent/50"
+                      }`}
+                    >
+                      <Bot className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-medium truncate">
+                          {stage.name}
+                        </div>
+                        <div className="text-[10px] text-muted-foreground truncate">
+                          {stage.role}
+                        </div>
+                      </div>
+                      {alreadyAdded && (
+                        <span className="text-[10px] text-muted-foreground shrink-0">Added</span>
+                      )}
+                    </div>
                   );
-                  e.dataTransfer.effectAllowed = "move";
-                }}
-                className="flex items-center gap-2 rounded-md border bg-background p-2 cursor-grab active:cursor-grabbing hover:bg-accent/50 transition-colors"
-              >
-                <Bot className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                <div className="min-w-0">
-                  <div className="text-xs font-medium truncate">
-                    {agent.name}
+                })}
+              </>
+            ) : (
+              <>
+                {agents.length === 0 && (
+                  <p className="text-xs text-muted-foreground py-2">
+                    No agents available. Create agents first.
+                  </p>
+                )}
+                {agents.map((agent) => (
+                  <div
+                    key={agent.id}
+                    draggable
+                    onDragStart={(e) => {
+                      e.dataTransfer.setData(
+                        "application/agentforge-agent",
+                        JSON.stringify(agent)
+                      );
+                      e.dataTransfer.effectAllowed = "move";
+                    }}
+                    className="flex items-center gap-2 rounded-md border bg-background p-2 cursor-grab active:cursor-grabbing hover:bg-accent/50 transition-colors"
+                  >
+                    <Bot className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                    <div className="min-w-0">
+                      <div className="text-xs font-medium truncate">
+                        {agent.name}
+                      </div>
+                      <div className="text-[10px] text-muted-foreground truncate">
+                        {agent.role}
+                      </div>
+                    </div>
                   </div>
-                  <div className="text-[10px] text-muted-foreground truncate">
-                    {agent.role}
-                  </div>
-                </div>
-              </div>
-            ))}
+                ))}
+              </>
+            )}
           </div>
         </div>
 
@@ -299,14 +443,20 @@ export function WorkflowBuilder({
       <div className="flex-1 flex flex-col">
         {/* Top Bar */}
         <div className="flex items-center gap-3 border-b bg-card px-4 py-2">
-          <Input
-            value={workflowName}
-            onChange={(e) => setWorkflowName(e.target.value)}
-            className="max-w-[250px] h-8 text-sm"
-            placeholder="Workflow name"
-          />
+          {isProjectMode ? (
+            <span className="text-sm font-medium truncate max-w-[300px]">
+              {projectName || "Untitled Project"} &mdash; Pipeline
+            </span>
+          ) : (
+            <Input
+              value={workflowName}
+              onChange={(e) => setWorkflowName(e.target.value)}
+              className="max-w-[250px] h-8 text-sm"
+              placeholder="Workflow name"
+            />
+          )}
 
-          {templates.length > 0 && (
+          {!isProjectMode && templates.length > 0 && (
             <Select onValueChange={loadTemplate}>
               <SelectTrigger className="w-[180px] h-8 text-xs">
                 <FileDown className="h-3.5 w-3.5 mr-1.5" />
@@ -324,30 +474,43 @@ export function WorkflowBuilder({
 
           <div className="flex-1" />
 
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleSave}
-            disabled={saving}
-          >
-            <Save className="h-3.5 w-3.5 mr-1.5" />
-            {saving ? "Saving..." : "Save"}
-          </Button>
-          <Button
-            size="sm"
-            onClick={async () => {
-              if (!taskInput.trim()) {
-                alert("Enter a task description before executing.");
-                return;
-              }
-              await handleSave();
-              await onExecute(taskInput.trim());
-            }}
-            disabled={executing || saving || nodes.length === 0}
-          >
-            <Play className="h-3.5 w-3.5 mr-1.5" />
-            {executing ? "Starting..." : "Execute"}
-          </Button>
+          {isProjectMode ? (
+            <Button
+              size="sm"
+              onClick={handleCreateProject}
+              disabled={creatingProject || nodes.length === 0}
+            >
+              <Play className="h-3.5 w-3.5 mr-1.5" />
+              {creatingProject ? "Creating..." : "Create Project"}
+            </Button>
+          ) : (
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleSave}
+                disabled={saving}
+              >
+                <Save className="h-3.5 w-3.5 mr-1.5" />
+                {saving ? "Saving..." : "Save"}
+              </Button>
+              <Button
+                size="sm"
+                onClick={async () => {
+                  if (!taskInput.trim()) {
+                    toast.error("Enter a task description before executing.");
+                    return;
+                  }
+                  await handleSave();
+                  await onExecute(taskInput.trim(), workingDir.trim() || undefined);
+                }}
+                disabled={executing || saving || nodes.length === 0}
+              >
+                <Play className="h-3.5 w-3.5 mr-1.5" />
+                {executing ? "Starting..." : "Execute"}
+              </Button>
+            </>
+          )}
         </div>
 
         {/* React Flow Canvas */}
@@ -396,7 +559,43 @@ export function WorkflowBuilder({
       </div>
 
       {/* Right Sidebar Panel */}
+      {!isProjectMode && (
       <div className="w-64 shrink-0 border-l bg-card p-3 flex flex-col gap-4 overflow-y-auto">
+        {/* Working Directory */}
+        <div>
+          <Label className="text-sm font-medium">Working Directory</Label>
+          <p className="text-xs text-muted-foreground mb-2">
+            Folder where agents will read/write files
+          </p>
+          <div className="flex gap-1.5">
+            <div className="relative flex-1">
+              <FolderOpen className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+              <Input
+                value={workingDir}
+                onChange={(e) => setWorkingDir(e.target.value)}
+                placeholder="/path/to/your/project"
+                className="text-xs pl-8"
+              />
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="shrink-0 text-xs"
+              onClick={async () => {
+                try {
+                  const res = await fetch("/api/browse-folder", { method: "POST" });
+                  const data = await res.json();
+                  if (data.path) setWorkingDir(data.path);
+                } catch {
+                  toast.error("Failed to open folder picker");
+                }
+              }}
+            >
+              Browse
+            </Button>
+          </div>
+        </div>
+
         {/* Task Input */}
         <div>
           <Label className="text-sm font-medium">Task Input</Label>
@@ -415,11 +614,11 @@ export function WorkflowBuilder({
             className="w-full mt-2"
             onClick={async () => {
               if (!taskInput.trim()) {
-                alert("Enter a task description first.");
+                toast.error("Enter a task description first.");
                 return;
               }
               await handleSave();
-              await onExecute(taskInput.trim());
+              await onExecute(taskInput.trim(), workingDir.trim() || undefined);
             }}
             disabled={executing || saving || nodes.length === 0}
           >
@@ -545,6 +744,7 @@ export function WorkflowBuilder({
           </div>
         )}
       </div>
+      )}
     </div>
   );
 }
