@@ -26,9 +26,11 @@ async def create_project(
     name: str,
     brief: str,
     target_dir: str,
-    config: dict = {},
+    config: dict | None = None,
     stages: list[str] | None = None,
 ) -> dict:
+    if config is None:
+        config = {}
     if stages is not None:
         _validate_stages(stages)
         complexity = _complexity_from_stages(stages)
@@ -76,8 +78,8 @@ async def create_project(
             name=f"{tmpl_name} ({name})",
             role=role,
             system_prompt=template.system_prompt if template else f"You are a {role} agent.",
-            model=template.model if template and hasattr(template, 'model') else "claude-opus-4-20250514",
-            provider="claude-code",
+            model=template.model if template else "claude-opus-4-20250514",
+            provider=template.provider if template else "claude-code",
             tools=template.tools if template else "[]",
             skills=template.skills if template else "[]",
             is_template=False,
@@ -114,6 +116,8 @@ async def create_project(
 
 
 def _validate_stages(stages: list[str]) -> None:
+    if len(stages) != len(set(stages)):
+        raise ValueError("Duplicate stages")
     invalid = [s for s in stages if s not in VALID_STAGES]
     if invalid:
         raise ValueError(f"Invalid stages: {', '.join(invalid)}")
