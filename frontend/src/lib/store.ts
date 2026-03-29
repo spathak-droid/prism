@@ -136,7 +136,7 @@ interface ProjectStore {
   loading: boolean
   fetchProjects: () => Promise<void>
   fetchProject: (id: string) => Promise<void>
-  createProject: (data: { name: string; brief: string; targetDir: string }) => Promise<Project>
+  createProject: (data: { name: string; brief: string; targetDir: string; stages?: string[] }) => Promise<Project>
 }
 
 export const useProjectStore = create<ProjectStore>((set, get) => ({
