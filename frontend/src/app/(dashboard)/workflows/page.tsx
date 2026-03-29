@@ -1,11 +1,13 @@
 "use client";
 
 import React, { useCallback, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
+import { useProjectStore } from "@/lib/store";
 import { ReactFlowProvider } from "reactflow";
-import { GitBranch, Plus, Trash2, Play, Eye } from "lucide-react";
+import { ArrowLeft, GitBranch, Plus, Trash2, Eye } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { WorkflowBuilder } from "@/components/workflow-builder";
 import type { Node, Edge } from "reactflow";
@@ -33,6 +35,9 @@ interface AgentItem {
 
 export default function WorkflowsPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const isProjectMode = searchParams.get("projectMode") === "true";
+  const { pendingProject, createProject, clearPendingProject } = useProjectStore();
   const [workflows, setWorkflows] = useState<WorkflowItem[]>([]);
   const [agents, setAgents] = useState<AgentItem[]>([]);
   const [templates, setTemplates] = useState<WorkflowItem[]>([]);
@@ -70,6 +75,12 @@ export default function WorkflowsPage() {
       setLoading(false)
     );
   }, [fetchWorkflows, fetchAgents]);
+
+  useEffect(() => {
+    if (isProjectMode && pendingProject) {
+      setShowBuilder(true);
+    }
+  }, [isProjectMode, pendingProject]);
 
   const handleCreateNew = useCallback(async () => {
     try {
@@ -133,7 +144,7 @@ export default function WorkflowsPage() {
     [editingWorkflow, fetchWorkflows]
   );
 
-  const handleExecute = useCallback(async (input: string) => {
+  const handleExecute = useCallback(async (input: string, cwd?: string) => {
     if (!editingWorkflow) return;
 
     setExecuting(true);
@@ -141,11 +152,11 @@ export default function WorkflowsPage() {
       const res = await fetch(`/api/workflows/${editingWorkflow.id}/execute`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ input }),
+        body: JSON.stringify({ input, cwd }),
       });
       if (!res.ok) {
         const errData = await res.json();
-        alert(`Execution failed: ${errData.error}`);
+        toast.error(`Execution failed: ${errData.error || "Unknown error"}`);
         return;
       }
       const { executionId } = await res.json();
@@ -157,6 +168,24 @@ export default function WorkflowsPage() {
     }
   }, [editingWorkflow, router]);
 
+  const handleCreateProject = useCallback(async (stages: string[]) => {
+    if (!pendingProject) return;
+    try {
+      const project = await createProject({
+        name: pendingProject.name,
+        brief: pendingProject.brief,
+        targetDir: pendingProject.targetDir,
+        stages,
+      });
+      clearPendingProject();
+      if (project?.id) {
+        router.push(`/projects/${project.id}`);
+      }
+    } catch (err) {
+      console.error("Failed to create project:", err);
+    }
+  }, [pendingProject, createProject, clearPendingProject, router]);
+
   // Builder mode
   if (showBuilder) {
     return (
@@ -165,17 +194,24 @@ export default function WorkflowsPage() {
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => setShowBuilder(false)}
+            onClick={() => {
+              setShowBuilder(false);
+              if (isProjectMode) {
+                clearPendingProject();
+                router.push("/projects");
+              }
+            }}
           >
-            Back to Workflows
+            <ArrowLeft className="h-4 w-4 mr-1" />
+            {isProjectMode ? "Cancel" : "Back to Workflows"}
           </Button>
         </div>
         <div className="flex-1">
           <ReactFlowProvider>
             <WorkflowBuilder
-              workflow={editingWorkflow}
+              workflow={isProjectMode ? null : editingWorkflow}
               agents={agents}
-              templates={templates.map((t) => ({
+              templates={isProjectMode ? [] : templates.map((t) => ({
                 id: t.id,
                 name: t.name,
                 description: t.description,
@@ -186,11 +222,19 @@ export default function WorkflowsPage() {
               onExecute={handleExecute}
               saving={saving}
               executing={executing}
+              mode={isProjectMode ? "project" : "workflow"}
+              projectName={pendingProject?.name}
+              onCreateProject={handleCreateProject}
             />
           </ReactFlowProvider>
         </div>
       </div>
     );
+  }
+
+  if (isProjectMode && !pendingProject) {
+    router.push("/projects");
+    return null;
   }
 
   // List mode
@@ -259,7 +303,11 @@ export default function WorkflowsPage() {
           <h2 className="text-lg font-medium mb-3">Your Workflows</h2>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {workflows.map((wf) => (
-              <Card key={wf.id} className="p-4">
+              <Card
+                key={wf.id}
+                className="p-4 cursor-pointer hover:border-primary/50 hover:bg-muted/50 hover:shadow-md hover:scale-[1.02] transition-all duration-200"
+                onClick={() => handleEdit(wf)}
+              >
                 <div className="flex items-start justify-between">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
@@ -286,16 +334,7 @@ export default function WorkflowsPage() {
                     variant="outline"
                     size="sm"
                     className="text-xs"
-                    onClick={() => handleEdit(wf)}
-                  >
-                    <Play className="h-3 w-3 mr-1" />
-                    Edit
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="text-xs"
-                    onClick={() => router.push(`/workflows/${wf.id}`)}
+                    onClick={(e) => { e.stopPropagation(); router.push(`/workflows/${wf.id}`); }}
                   >
                     <Eye className="h-3 w-3 mr-1" />
                     View
@@ -304,7 +343,7 @@ export default function WorkflowsPage() {
                     variant="ghost"
                     size="sm"
                     className="text-xs text-destructive"
-                    onClick={() => handleDelete(wf.id)}
+                    onClick={(e) => { e.stopPropagation(); handleDelete(wf.id); }}
                   >
                     <Trash2 className="h-3 w-3" />
                   </Button>
