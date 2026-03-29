@@ -168,8 +168,11 @@ export default function WorkflowsPage() {
     }
   }, [editingWorkflow, router]);
 
+  const [creatingProject, setCreatingProject] = useState(false);
+
   const handleCreateProject = useCallback(async (stages: string[]) => {
     if (!pendingProject) return;
+    setCreatingProject(true);
     try {
       const project = await createProject({
         name: pendingProject.name,
@@ -182,9 +185,17 @@ export default function WorkflowsPage() {
         router.push(`/projects/${project.id}`);
       }
     } catch (err) {
+      toast.error("Failed to create project");
       console.error("Failed to create project:", err);
+    } finally {
+      setCreatingProject(false);
     }
   }, [pendingProject, createProject, clearPendingProject, router]);
+
+  if (isProjectMode && !pendingProject) {
+    router.push("/projects");
+    return null;
+  }
 
   // Builder mode
   if (showBuilder) {
@@ -225,16 +236,12 @@ export default function WorkflowsPage() {
               mode={isProjectMode ? "project" : "workflow"}
               projectName={pendingProject?.name}
               onCreateProject={handleCreateProject}
+              creatingProject={creatingProject}
             />
           </ReactFlowProvider>
         </div>
       </div>
     );
-  }
-
-  if (isProjectMode && !pendingProject) {
-    router.push("/projects");
-    return null;
   }
 
   // List mode
