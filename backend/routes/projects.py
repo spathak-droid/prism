@@ -63,7 +63,7 @@ def get_project(project_id: str, db: Session = Depends(get_db)):
         "id": project.id, "name": project.name, "brief": project.brief,
         "targetDir": project.target_dir, "status": project.status,
         "complexity": project.complexity,
-        "config": json.loads(project.config),
+        "config": json.loads(project.config) if project.config else {},
         "planApproved": project.plan_approved,
         "agents": agents, "approvalGates": approval_gates,
         "state": state,
