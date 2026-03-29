@@ -102,7 +102,7 @@ async def create_project(
         "complexity": complexity,
     })
 
-    asyncio.create_task(_run_factory_pipeline(project_id, brief, target_dir, complexity, db))
+    asyncio.create_task(_run_factory_pipeline(project_id, brief, target_dir, complexity, db, stages=config.get("stages")))
 
     return {
         "id": project_id,
@@ -161,12 +161,21 @@ def _get_agents_for_complexity(complexity: str) -> list[tuple[str, str]]:
         ]
 
 
-async def _run_factory_pipeline(project_id: str, brief: str, target_dir: str, complexity: str, _db: Session):
+async def _run_factory_pipeline(project_id: str, brief: str, target_dir: str, complexity: str, _db: Session, stages: list[str] | None = None):
     """Run the LangGraph pipeline. Uses fresh DB sessions to avoid stale connections."""
     from db.database import SessionLocal
 
     try:
-        if complexity == "simple":
+        if stages is not None:
+            # Dynamic graph selection based on explicit stages
+            stage_set = set(stages)
+            if stage_set & {"approval", "deployer", "researcher"}:
+                from graphs.factory_medium import get_medium_graph_runner
+                graph = await get_medium_graph_runner()
+            else:
+                from graphs.factory_simple import get_simple_graph_runner
+                graph = await get_simple_graph_runner()
+        elif complexity == "simple":
             from graphs.factory_simple import get_simple_graph_runner
             graph = await get_simple_graph_runner()
         elif complexity == "medium":
@@ -176,6 +185,12 @@ async def _run_factory_pipeline(project_id: str, brief: str, target_dir: str, co
             from graphs.factory_complex import get_complex_graph_runner
             graph = await get_complex_graph_runner()
 
+        # Determine approval gate
+        if stages is not None:
+            approved = "approval" not in stages
+        else:
+            approved = True if complexity == "simple" else False
+
         initial_state = {
             "project_id": project_id,
             "brief": brief,
@@ -183,7 +198,7 @@ async def _run_factory_pipeline(project_id: str, brief: str, target_dir: str, co
             "complexity": complexity,
             "research": None,
             "plan": None,
-            "approved": True if complexity == "simple" else False,
+            "approved": approved,
             "tickets": [],
             "ticket_results": {},
             "review_cycles": {},
