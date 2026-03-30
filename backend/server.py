@@ -13,6 +13,13 @@ async def lifespan(app: FastAPI):
     import db.models  # noqa: F401 — ensure all models registered before create_all
     init_db()
     print('[prism] Database initialized')
+    from services.goose_manager import verify_goose_available
+    try:
+        goose_info = verify_goose_available()
+        print(f'[prism] Goose CLI available: {goose_info}')
+    except RuntimeError as e:
+        print(f'[prism] WARNING: {e}')
+        print('[prism] Agent calls will fail until Goose is installed')
     from db.database import SessionLocal
     from services.demo_setup import setup_demo
     db = SessionLocal()

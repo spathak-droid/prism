@@ -167,6 +167,14 @@ class Event(Base):
     timestamp = Column(Text, nullable=False, default=utcnow)
 
 
+class TelegramSession(Base):
+    __tablename__ = "telegram_sessions"
+
+    chat_id = Column(Integer, primary_key=True)
+    agent_id = Column(Text, nullable=False)
+    created_at = Column(Text, nullable=False, default=utcnow)
+
+
 class AgentUsage(Base):
     __tablename__ = "agent_usage"
 

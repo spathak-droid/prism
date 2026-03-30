@@ -8,7 +8,7 @@ from telegram import BotCommand, Update
 from telegram.constants import ChatAction
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from db.database import SessionLocal
-from db.models import Agent, Workflow, WorkflowExecution, Message, new_id, utcnow
+from db.models import Agent, Workflow, WorkflowExecution, Message, TelegramSession, new_id, utcnow
 from services.pipeline import send_through_pipeline
 from services.goose_manager import goose_manager
 from services.event_bus import event_bus
@@ -56,12 +56,44 @@ class TelegramBot:
         await self.app.updater.start_polling()
         self.running = True
 
+        # Restore persisted chat→agent bindings
+        self._load_sessions()
+
     async def stop(self):
         if self.app and self.running:
             await self.app.updater.stop()
             await self.app.stop()
             await self.app.shutdown()
             self.running = False
+
+    def _load_sessions(self):
+        db = SessionLocal()
+        try:
+            sessions = db.query(TelegramSession).all()
+            for s in sessions:
+                self._agent_map[s.chat_id] = s.agent_id
+        finally:
+            db.close()
+
+    def _save_session(self, chat_id: int, agent_id: str):
+        db = SessionLocal()
+        try:
+            existing = db.query(TelegramSession).filter(TelegramSession.chat_id == chat_id).first()
+            if existing:
+                existing.agent_id = agent_id
+            else:
+                db.add(TelegramSession(chat_id=chat_id, agent_id=agent_id))
+            db.commit()
+        finally:
+            db.close()
+
+    def _delete_session(self, chat_id: int):
+        db = SessionLocal()
+        try:
+            db.query(TelegramSession).filter(TelegramSession.chat_id == chat_id).delete()
+            db.commit()
+        finally:
+            db.close()
 
     async def _cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
@@ -111,6 +143,7 @@ class TelegramBot:
                 await update.message.reply_text(f"Agent '{name}' not found.")
                 return
             self._agent_map[update.effective_chat.id] = agent.id
+            self._save_session(update.effective_chat.id, agent.id)
             goose_manager.register_agent(agent.id, agent.name, agent.provider, agent.model, json.loads(agent.tools))
             await update.message.reply_text(f'Connected to {agent.name}. Send messages to chat.')
         finally:
@@ -152,6 +185,7 @@ class TelegramBot:
 
     async def _cmd_reset(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         self._agent_map.pop(update.effective_chat.id, None)
+        self._delete_session(update.effective_chat.id)
         self._workflow_executions.pop(update.effective_chat.id, None)
         await update.message.reply_text('Disconnected.')
 

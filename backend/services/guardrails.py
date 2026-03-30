@@ -14,7 +14,7 @@ def parse_guardrails(guardrails_json: str) -> dict:
 def check_rate_limit(db: Session, agent_id: str, limit: int) -> bool:
     cutoff = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
     count = db.query(Message).filter(
-        Message.from_agent_id == agent_id,
+        Message.to_agent_id == agent_id,
         Message.timestamp > cutoff,
     ).count()
     return count < limit
