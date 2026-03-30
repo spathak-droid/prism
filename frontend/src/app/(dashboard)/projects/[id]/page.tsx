@@ -48,8 +48,9 @@ interface ProjectState {
     current_phase?: string;
     phases?: Record<string, PipelinePhase>;
   };
-  plan?: unknown;
+  plan?: { tickets?: { id: string; title: string; description: string; status: string }[] };
   research?: unknown;
+  results?: Record<string, { coder?: { status?: string; files_changed?: { path: string; action: string; lines?: number }[]; git_commit?: string }; reviewer?: { verdict?: string; cycle?: number; summary?: string } }>;
 }
 
 interface ProjectDetail {

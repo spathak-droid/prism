@@ -42,6 +42,8 @@ async def lifespan(app: FastAPI):
     agent_scheduler.stop()
     from services.goose_manager import goose_manager
     goose_manager.kill_all()
+    from services.checkpointer import close_checkpointer
+    await close_checkpointer()
     print('[prism] Shutting down')
 
 

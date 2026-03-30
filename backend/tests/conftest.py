@@ -36,6 +36,17 @@ def setup_tables():
     Base.metadata.drop_all(bind=TEST_ENGINE)
 
 
+@pytest.fixture(autouse=True)
+def _reset_goose_path_cache():
+    """Reset the cached goose path between tests to prevent cross-test leaks."""
+    import os
+    import services.goose_manager as gm_mod
+    original = gm_mod._GOOSE_PATH
+    yield
+    gm_mod._GOOSE_PATH = original
+    os.environ.pop("GOOSE_PATH", None)
+
+
 @pytest.fixture()
 def db_session(setup_tables):
     """Provide a raw DB session for tests that need direct DB access."""

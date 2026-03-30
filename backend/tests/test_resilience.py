@@ -10,51 +10,51 @@ from services.stream_parser import StreamChunk
 
 # ── Checkpointer ──────────────────────────────────────────────────────
 
-@pytest.mark.asyncio
-async def test_checkpointer_returns_sqlite_saver(tmp_path):
-    """get_checkpointer should return a context manager wrapping AsyncSqliteSaver."""
-    import os
-    db_path = str(tmp_path / "test_checkpoints.db")
+@pytest.fixture
+async def reset_checkpointer(tmp_path):
+    """Reset checkpointer singleton before each test, close after."""
     import services.checkpointer as cp_mod
-    cp_mod._CHECKPOINT_DB = db_path
+    cp_mod._saver_instance = None
+    cp_mod._CHECKPOINT_DB = str(tmp_path / "cp.db")
+    yield cp_mod
+    await cp_mod.close_checkpointer()
+
+
+@pytest.mark.asyncio
+async def test_checkpointer_returns_sqlite_saver(reset_checkpointer):
+    """get_checkpointer should return a real AsyncSqliteSaver instance."""
+    cp_mod = reset_checkpointer
     saver = await cp_mod.get_checkpointer()
     assert saver is not None
-    # Must be a real AsyncSqliteSaver instance, not a context manager
     assert isinstance(saver, AsyncSqliteSaver)
     assert hasattr(saver, 'get_tuple')
+
+    # Second call returns same instance (singleton)
+    saver2 = await cp_mod.get_checkpointer()
+    assert saver2 is saver
 
 
 # ── Graph compilation ─────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_simple_graph_compiles_with_checkpointer(tmp_path):
+async def test_simple_graph_compiles_with_checkpointer(reset_checkpointer):
     """Simple graph should compile with persistent checkpointer."""
-    import os
-    import services.checkpointer as cp_mod
-    db_path = str(tmp_path / "cp.db")
-    cp_mod._CHECKPOINT_DB = db_path
     from graphs.factory_simple import get_simple_graph_runner
     runner = await get_simple_graph_runner()
     assert runner is not None
 
 
 @pytest.mark.asyncio
-async def test_medium_graph_compiles_with_checkpointer(tmp_path):
+async def test_medium_graph_compiles_with_checkpointer(reset_checkpointer):
     """Medium graph should compile with persistent checkpointer."""
-    import services.checkpointer as cp_mod
-    db_path = str(tmp_path / "cp.db")
-    cp_mod._CHECKPOINT_DB = db_path
     from graphs.factory_medium import get_medium_graph_runner
     runner = await get_medium_graph_runner()
     assert runner is not None
 
 
 @pytest.mark.asyncio
-async def test_complex_graph_compiles_with_checkpointer(tmp_path):
+async def test_complex_graph_compiles_with_checkpointer(reset_checkpointer):
     """Complex graph should compile with persistent checkpointer."""
-    import services.checkpointer as cp_mod
-    db_path = str(tmp_path / "cp.db")
-    cp_mod._CHECKPOINT_DB = db_path
     from graphs.factory_complex import get_complex_graph_runner
     runner = await get_complex_graph_runner()
     assert runner is not None

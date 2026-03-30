@@ -270,37 +270,16 @@ export function WorkflowBuilder({
   const selectedEdgeData = edges.find((e) => e.id === selectedEdge);
 
   const extractStagesFromNodes = useCallback((): string[] => {
-    const adj: Record<string, string[]> = {};
-    const inDegree: Record<string, number> = {};
-    for (const node of nodes) {
-      adj[node.id] = [];
-      inDegree[node.id] = 0;
-    }
-    for (const edge of edges) {
-      if (adj[edge.source]) {
-        adj[edge.source].push(edge.target);
-        inDegree[edge.target] = (inDegree[edge.target] || 0) + 1;
-      }
-    }
-    const queue = Object.keys(inDegree).filter((id) => inDegree[id] === 0);
-    const sorted: string[] = [];
-    while (queue.length > 0) {
-      const nodeId = queue.shift()!;
-      sorted.push(nodeId);
-      for (const neighbor of (adj[nodeId] || [])) {
-        inDegree[neighbor]--;
-        if (inDegree[neighbor] === 0) queue.push(neighbor);
-      }
-    }
-    return sorted
-      .map((nodeId) => {
-        const node = nodes.find((n) => n.id === nodeId);
-        if (!node) return null;
+    // Collect all stages present on the canvas — don't use topological sort
+    // because feedback loops (e.g. Reviewer → Builder reject) create cycles
+    // that cause topo sort to drop nodes.
+    return nodes
+      .map((node) => {
         const label = (node.data as AgentNodeData).label;
         return LABEL_TO_STAGE_KEY[label] || null;
       })
       .filter((s): s is string => s !== null);
-  }, [nodes, edges]);
+  }, [nodes]);
 
   const handleCreateProject = useCallback(async () => {
     if (!onCreateProject) return;
@@ -645,6 +624,24 @@ export function WorkflowBuilder({
                 <div>
                   <span className="text-muted-foreground">Status:</span>
                   <span className="ml-1">{nodeData.status || "idle"}</span>
+                </div>
+                <div>
+                  <Label className="text-xs text-muted-foreground">Node Instruction</Label>
+                  <Textarea
+                    className="mt-1 text-xs min-h-[60px]"
+                    placeholder="Specific task directive for this node..."
+                    value={nodeData.instruction || ""}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setNodes((nds) =>
+                        nds.map((n) =>
+                          n.id === selectedNode
+                            ? { ...n, data: { ...n.data, instruction: val } }
+                            : n
+                        )
+                      );
+                    }}
+                  />
                 </div>
                 {inEdges.length > 0 && (
                   <div>

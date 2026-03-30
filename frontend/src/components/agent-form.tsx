@@ -22,24 +22,8 @@ import {
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
-import { useAgentStore } from "@/lib/store";
+import { useAgentStore, type Agent } from "@/lib/store";
 import { apiFetch } from "@/lib/utils";
-
-interface Agent {
-  id: string;
-  name: string;
-  role: string;
-  systemPrompt: string;
-  model: string;
-  provider: string;
-  tools: string[];
-  channels: string[];
-  schedule: string | null;
-  scheduledTask: string | null;
-  memory: Record<string, string>;
-  guardrails: Record<string, unknown>;
-  [key: string]: unknown;
-}
 
 interface AgentFormProps {
   agent?: Agent | null;
@@ -122,9 +106,9 @@ export default function AgentForm({ agent, open, onOpenChange, onSuccess }: Agen
       const g = safeObj(agent.guardrails);
       setCostLimit(String(g.cost_limit ?? g.costLimit ?? 1.0));
       setRateLimit(String(g.rate_limit ?? g.rateLimit ?? 60));
-      const ir = safeObj(agent.interaction_rules ?? agent.interactionRules);
+      const ir = safeObj(agent.interactionRules);
       setInteractionMode((ir.mode as string) || "auto");
-      try { setSelectedSkills(JSON.parse((agent.skills as string) || "[]")); } catch { setSelectedSkills([]); }
+      try { setSelectedSkills(Array.isArray(agent.skills) ? agent.skills : JSON.parse(String(agent.skills) || "[]")); } catch { setSelectedSkills([]); }
     } else {
       setName(""); setRole("assistant"); setSystemPrompt("You are a helpful AI agent.");
       setProvider("claude-code"); setModel("claude-opus-4-20250514"); setTools(["developer"]);

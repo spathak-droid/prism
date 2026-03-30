@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import ReactFlow, {
   Background,
@@ -494,8 +494,10 @@ function WorkflowDetailContent() {
 
 export default function WorkflowDetailPage() {
   return (
-    <ReactFlowProvider>
-      <WorkflowDetailContent />
-    </ReactFlowProvider>
+    <Suspense fallback={<div className="p-8 text-muted-foreground">Loading workflow...</div>}>
+      <ReactFlowProvider>
+        <WorkflowDetailContent />
+      </ReactFlowProvider>
+    </Suspense>
   );
 }

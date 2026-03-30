@@ -21,7 +21,7 @@ import { cn } from "@/lib/utils";
 interface LogEntry {
   id: string;
   timestamp: string;
-  type: "tool_request" | "tool_response" | "message" | "other";
+  type: "tool_request" | "tool_response" | "tool_call" | "tool_result" | "message" | "other";
   direction?: "incoming" | "outgoing";
   content: string;
   toolName?: string;

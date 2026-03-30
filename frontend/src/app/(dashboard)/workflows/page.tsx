@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { Suspense, useCallback, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useProjectStore } from "@/lib/store";
 import { ReactFlowProvider } from "reactflow";
@@ -33,7 +33,7 @@ interface AgentItem {
   status: string;
 }
 
-export default function WorkflowsPage() {
+function WorkflowsPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const isProjectMode = searchParams.get("projectMode") === "true";
@@ -379,5 +379,13 @@ export default function WorkflowsPage() {
         </Card>
       )}
     </div>
+  );
+}
+
+export default function WorkflowsPage() {
+  return (
+    <Suspense fallback={<div className="p-8 text-muted-foreground">Loading workflows...</div>}>
+      <WorkflowsPageContent />
+    </Suspense>
   );
 }

@@ -140,25 +140,45 @@ export default function MonitorPage() {
     fetchProjects();
     fetchMessages();
     fetchEvents();
+    // Poll agents/messages at a slower cadence (SSE handles events in real-time)
     const interval = setInterval(() => {
       fetchAgents();
       fetchMessages();
-      fetchEvents();
     }, 5000);
     return () => clearInterval(interval);
   }, [fetchAgents, fetchProjects, fetchMessages, fetchEvents]);
 
-  // SSE for real-time badge
+  // SSE for real-time events — parse data directly instead of refetching
   useEffect(() => {
     const es = new EventSource("/api/events");
     es.onopen = () => setConnected(true);
-    es.onmessage = () => {
-      // Just trigger a refetch to get persisted events
-      fetchEvents();
+    es.onmessage = (msg) => {
+      try {
+        const event = JSON.parse(msg.data);
+        if (event.type === "heartbeat") return;
+        const mapped: PersistedEvent = {
+          id: event.id || `sse-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          type: event.type,
+          timestamp: event.timestamp || new Date().toISOString(),
+          agentId: event.agent_id,
+          projectId: event.project_id,
+          status: event.status,
+          content: event.content,
+          direction: event.direction,
+          channel: event.channel,
+          workflowId: event.workflow_id,
+          executionId: event.execution_id,
+          toolName: event.tool_name,
+          toolType: event.tool_type,
+        };
+        setEvents((prev) => [...prev, mapped]);
+        // Also refresh agents since status may have changed
+        fetchAgents();
+      } catch { /* ignore parse errors */ }
     };
     es.onerror = () => setConnected(false);
     return () => { es.close(); setConnected(false); };
-  }, [fetchEvents]);
+  }, [fetchAgents]);
 
   const agentNameMap = new Map(agents.map((a) => [a.id, a.name]));
   const projectNameMap = new Map(projects.map((p) => [p.id, p.name]));

@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 export interface AgentNodeData {
   agentId: string | null;
   label: string;
+  instruction?: string;
   type?: string;
   status?: "idle" | "running" | "completed" | "error";
 }
