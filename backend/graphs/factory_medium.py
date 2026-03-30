@@ -1,7 +1,6 @@
 """Medium Factory SDLC graph: Researcher → Planner → Approval → Coder(s) → Reviewer → Deployer"""
 from typing import TypedDict, Optional
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.memory import MemorySaver
 from graphs.nodes import (
     researcher_node, planner_node, approval_gate_node,
     coder_node, reviewer_node, deployer_node, check_review_outcome,
@@ -53,8 +52,10 @@ def build_medium_graph():
 
 
 async def get_medium_graph_runner():
+    from services.checkpointer import get_checkpointer
     graph = build_medium_graph()
-    return graph.compile(checkpointer=MemorySaver(), interrupt_before=["approval_gate"])
+    checkpointer = await get_checkpointer()
+    return graph.compile(checkpointer=checkpointer, interrupt_before=["approval_gate"])
 
 
 def build_post_approval_graph():

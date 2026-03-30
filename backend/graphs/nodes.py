@@ -11,6 +11,9 @@ from datetime import datetime, timezone
 from db.database import SessionLocal
 from services.skill_loader import build_prompt_with_skills
 
+# Limit concurrent Goose subprocesses to prevent resource exhaustion
+_GOOSE_SEMAPHORE = asyncio.Semaphore(3)
+
 # Skill assignments per role (matches demo_setup.py AGENT_TEMPLATES)
 ROLE_SKILLS = {
     "researcher": ["research"],
@@ -178,45 +181,75 @@ async def run_goose_agent(
     provider: str = "claude-code",
     model: str = "claude-opus-4-20250514",
     max_turns: int = 15,
+    timeout: int = 300,
+    max_retries: int = 2,
 ) -> str:
-    """Spawn a Goose subprocess and collect full response."""
+    """Spawn a Goose subprocess and collect full response. Retries on transient failures."""
     goose_manager.register_agent(agent_id, agent_name, provider, model, ["developer", "analyze"])
     _set_agent_db_status(agent_id, "running")
-    print(f"[run_goose_agent] Starting {agent_name} (id={agent_id[:8]}...) in {target_dir}")
-    full_response = ""
-    text_buffer = ""
-    chunk_count = 0
-    try:
-        async for chunk in goose_manager.send_message(
-            agent_id=agent_id,
-            message=message,
-            system_prompt=system_prompt,
-            cwd=target_dir,
-            max_turns=max_turns,
-        ):
-            if chunk.type == "text":
-                full_response += chunk.content
-                text_buffer += chunk.content
-                # Only flush on double-newline (paragraph break) or large buffer
-                if "\n\n" in text_buffer or len(text_buffer) > 800:
-                    cleaned = _clean_text_for_log(text_buffer)
-                    if len(cleaned) > 10:
-                        _save_log_entry(agent_id, "text", cleaned[:800])
-                    text_buffer = ""
-            elif chunk.type == "tool_request":
-                _save_log_entry(agent_id, "tool_call", chunk.content, chunk.tool_name or "", chunk.tool_args or "")
-            elif chunk.type == "tool_response":
-                _save_log_entry(agent_id, "tool_result", chunk.content[:500], chunk.tool_name or "")
-            chunk_count += 1
-        # Flush remaining text buffer
-        if text_buffer.strip():
-            cleaned = _clean_text_for_log(text_buffer)
-            if len(cleaned) > 10:
-                _save_log_entry(agent_id, "text", cleaned[:500])
-    finally:
-        print(f"[run_goose_agent] {agent_name} finished. {chunk_count} chunks, {len(full_response)} chars")
-        _set_agent_db_status(agent_id, "idle")
-    return full_response
+
+    backoff_delays = [5, 15]
+    last_error = None
+
+    for attempt in range(1 + max_retries):
+        if attempt > 0:
+            delay = backoff_delays[min(attempt - 1, len(backoff_delays) - 1)]
+            print(f"[run_goose_agent] Retry {attempt}/{max_retries} for {agent_name} after {delay}s")
+            await asyncio.sleep(delay)
+
+        print(f"[run_goose_agent] Starting {agent_name} (id={agent_id[:8]}...) attempt={attempt + 1} in {target_dir}")
+        full_response = ""
+        text_buffer = ""
+        chunk_count = 0
+        is_transient_failure = False
+
+        try:
+            async for chunk in goose_manager.send_message(
+                agent_id=agent_id,
+                message=message,
+                system_prompt=system_prompt,
+                cwd=target_dir,
+                max_turns=max_turns,
+                timeout=timeout,
+            ):
+                if chunk.type == "text":
+                    if chunk.content.startswith("Error: Agent timed out") or chunk.content.startswith("Error:"):
+                        is_transient_failure = True
+                        last_error = chunk.content
+                        break
+                    full_response += chunk.content
+                    text_buffer += chunk.content
+                    if "\n\n" in text_buffer or len(text_buffer) > 800:
+                        cleaned = _clean_text_for_log(text_buffer)
+                        if len(cleaned) > 10:
+                            _save_log_entry(agent_id, "text", cleaned[:800])
+                        text_buffer = ""
+                elif chunk.type == "tool_request":
+                    _save_log_entry(agent_id, "tool_call", chunk.content, chunk.tool_name or "", chunk.tool_args or "")
+                elif chunk.type == "tool_response":
+                    _save_log_entry(agent_id, "tool_result", chunk.content[:500], chunk.tool_name or "")
+                chunk_count += 1
+
+            # Flush remaining text buffer
+            if text_buffer.strip():
+                cleaned = _clean_text_for_log(text_buffer)
+                if len(cleaned) > 10:
+                    _save_log_entry(agent_id, "text", cleaned[:500])
+
+            if not is_transient_failure:
+                print(f"[run_goose_agent] {agent_name} finished. {chunk_count} chunks, {len(full_response)} chars")
+                _set_agent_db_status(agent_id, "idle")
+                return full_response
+
+        except Exception as e:
+            is_transient_failure = True
+            last_error = str(e)
+            print(f"[run_goose_agent] {agent_name} failed with exception: {e}")
+
+    # All retries exhausted
+    print(f"[run_goose_agent] {agent_name} failed after {max_retries + 1} attempts: {last_error}")
+    _set_agent_db_status(agent_id, "error")
+    return f"AGENT_ERROR: {last_error}"
 
 
 async def planner_node(state: dict) -> dict:
@@ -329,10 +362,11 @@ async def coder_node(state: dict) -> dict:
             tid = ticket["id"] if isinstance(ticket, dict) else ticket.id
             new_results[tid] = result
     else:
-        tasks = [
-            _run_coder_for_ticket(t, state, system_prompt, target_dir, review_cycles)
-            for t in independent
-        ]
+        async def _bounded_run(t):
+            async with _GOOSE_SEMAPHORE:
+                return await _run_coder_for_ticket(t, state, system_prompt, target_dir, review_cycles)
+
+        tasks = [_bounded_run(t) for t in independent]
         results = await asyncio.gather(*tasks)
         for ticket, result in zip(independent, results):
             tid = ticket["id"] if isinstance(ticket, dict) else ticket.id

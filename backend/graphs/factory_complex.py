@@ -1,6 +1,5 @@
 """Complex Factory SDLC graph: multi-phase variant of medium."""
 from graphs.factory_medium import build_medium_graph, MediumProjectState
-from langgraph.checkpoint.memory import MemorySaver
 
 
 # For v1, complex uses the same graph as medium.
@@ -13,5 +12,7 @@ def build_complex_graph():
 
 
 async def get_complex_graph_runner():
+    from services.checkpointer import get_checkpointer
     graph = build_complex_graph()
-    return graph.compile(checkpointer=MemorySaver(), interrupt_before=["approval_gate"])
+    checkpointer = await get_checkpointer()
+    return graph.compile(checkpointer=checkpointer, interrupt_before=["approval_gate"])

@@ -36,6 +36,7 @@ class GooseManager:
         max_turns: int = 15,
         extra_builtins: Optional[list[str]] = None,
         execution_id: Optional[str] = None,
+        timeout: int = 300,
     ) -> AsyncGenerator[StreamChunk, None]:
         """Spawn a fresh Goose session and yield StreamChunks."""
         agent = self._agents.get(agent_id)
@@ -92,37 +93,55 @@ class GooseManager:
             )
             self._processes[agent_id] = process
 
-            buffer = ""
-            while True:
-                line_bytes = await process.stdout.readline()
-                if not line_bytes:
-                    break
-                line = line_bytes.decode("utf-8", errors="replace")
-                buffer += line
+            async def _read_stream():
+                chunks = []
+                buffer = ""
+                while True:
+                    line_bytes = await process.stdout.readline()
+                    if not line_bytes:
+                        break
+                    line = line_bytes.decode("utf-8", errors="replace")
+                    buffer += line
 
-                # Process complete lines
-                while "\n" in buffer:
-                    complete_line, buffer = buffer.split("\n", 1)
-                    for chunk in parse_goose_line(complete_line):
-                        # Emit tool events for monitoring
-                        if chunk.type in ("tool_request", "tool_response"):
-                            tool_evt = {
-                                "agent_id": agent_id,
-                                "tool_name": chunk.tool_name or "unknown",
-                                "tool_type": chunk.type,
-                                "content": chunk.content,
-                            }
-                            if execution_id:
-                                tool_evt["execution_id"] = execution_id
-                            await event_bus.emit("agent:tool", tool_evt)
-                        yield chunk
+                    while "\n" in buffer:
+                        complete_line, buffer = buffer.split("\n", 1)
+                        for chunk in parse_goose_line(complete_line):
+                            if chunk.type in ("tool_request", "tool_response"):
+                                tool_evt = {
+                                    "agent_id": agent_id,
+                                    "tool_name": chunk.tool_name or "unknown",
+                                    "tool_type": chunk.type,
+                                    "content": chunk.content,
+                                }
+                                if execution_id:
+                                    tool_evt["execution_id"] = execution_id
+                                await event_bus.emit("agent:tool", tool_evt)
+                            chunks.append(chunk)
 
-            # Process remaining buffer
-            if buffer.strip():
-                for chunk in parse_goose_line(buffer):
+                if buffer.strip():
+                    for chunk in parse_goose_line(buffer):
+                        chunks.append(chunk)
+
+                await process.wait()
+                return chunks
+
+            try:
+                chunks = await asyncio.wait_for(_read_stream(), timeout=timeout)
+                for chunk in chunks:
                     yield chunk
-
-            await process.wait()
+            except asyncio.TimeoutError:
+                process.kill()
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    pass  # Process didn't exit after kill — move on
+                agent["status"] = "error"
+                err_evt = {"agent_id": agent_id, "status": "error", "reason": "timeout"}
+                if execution_id:
+                    err_evt["execution_id"] = execution_id
+                await event_bus.emit("agent:status", err_evt)
+                yield StreamChunk(type="text", content=f"Error: Agent timed out after {timeout}s")
+                return
 
         except Exception as e:
             agent["status"] = "error"
