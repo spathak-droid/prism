@@ -1,7 +1,9 @@
 """Tests for resilience improvements: checkpointing, timeouts, retries, concurrency."""
 import asyncio
+import os
 import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from services.goose_manager import GooseManager
 from services.stream_parser import StreamChunk
 
@@ -17,9 +19,9 @@ async def test_checkpointer_returns_sqlite_saver(tmp_path):
     cp_mod._CHECKPOINT_DB = db_path
     saver = await cp_mod.get_checkpointer()
     assert saver is not None
-    # LangGraph accepts this as a checkpointer (verified by graph compilation tests)
-    # The from_conn_string returns a context manager that LangGraph handles internally
-    assert hasattr(saver, '__aenter__') or hasattr(saver, 'get_tuple')
+    # Must be a real AsyncSqliteSaver instance, not a context manager
+    assert isinstance(saver, AsyncSqliteSaver)
+    assert hasattr(saver, 'get_tuple')
 
 
 # ── Graph compilation ─────────────────────────────────────────────────
@@ -63,81 +65,98 @@ async def test_complex_graph_compiles_with_checkpointer(tmp_path):
 @pytest.mark.asyncio
 async def test_goose_manager_timeout():
     """GooseManager should kill the process and yield an error on timeout."""
-    manager = GooseManager()
-    manager.register_agent("test-agent", "Test", "claude-code", "model", ["developer"])
+    os.environ["GOOSE_PATH"] = "/fake/goose"
+    try:
+        # Reset cached path so it picks up the env var
+        import services.goose_manager as gm_mod
+        gm_mod._GOOSE_PATH = None
 
-    mock_process = MagicMock()
-    mock_process.stderr = AsyncMock()
-    mock_process.returncode = None
-    mock_process.kill = MagicMock()
+        manager = GooseManager()
+        manager.register_agent("test-agent", "Test", "claude-code", "model", ["developer"])
 
-    async def mock_readline():
-        return b""
-    mock_process.stdout = MagicMock()
-    mock_process.stdout.readline = mock_readline
+        mock_process = MagicMock()
+        mock_process.stderr = AsyncMock()
+        mock_process.returncode = None
+        mock_process.kill = MagicMock()
 
-    async def mock_wait():
-        await asyncio.sleep(9999)
-    mock_process.wait = mock_wait
+        async def mock_readline():
+            return b""
+        mock_process.stdout = MagicMock()
+        mock_process.stdout.readline = mock_readline
 
-    with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_process), \
-         patch("services.goose_manager.event_bus") as mock_bus:
-        mock_bus.emit = AsyncMock()
+        async def mock_wait():
+            await asyncio.sleep(9999)
+        mock_process.wait = mock_wait
 
-        chunks = []
-        async for chunk in manager.send_message(
-            agent_id="test-agent",
-            message="test",
-            system_prompt="test",
-            timeout=2,
-        ):
-            chunks.append(chunk)
+        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_process), \
+             patch("services.goose_manager.event_bus") as mock_bus:
+            mock_bus.emit = AsyncMock()
 
-        assert len(chunks) == 1
-        assert "timed out" in chunks[0].content
-        assert manager._agents["test-agent"]["status"] == "error"
+            chunks = []
+            async for chunk in manager.send_message(
+                agent_id="test-agent",
+                message="test",
+                system_prompt="test",
+                timeout=2,
+            ):
+                chunks.append(chunk)
+
+            assert len(chunks) == 1
+            assert "timed out" in chunks[0].content
+            assert manager._agents["test-agent"]["status"] == "error"
+    finally:
+        os.environ.pop("GOOSE_PATH", None)
+        gm_mod._GOOSE_PATH = None
 
 
 @pytest.mark.asyncio
 async def test_goose_manager_normal_completion():
     """GooseManager should return chunks normally when no timeout occurs."""
-    manager = GooseManager()
-    manager.register_agent("test-agent", "Test", "claude-code", "model", ["developer"])
+    os.environ["GOOSE_PATH"] = "/fake/goose"
+    try:
+        import services.goose_manager as gm_mod
+        gm_mod._GOOSE_PATH = None
 
-    mock_process = MagicMock()
-    mock_process.stderr = AsyncMock()
-    mock_process.returncode = 0
+        manager = GooseManager()
+        manager.register_agent("test-agent", "Test", "claude-code", "model", ["developer"])
 
-    async def mock_wait():
-        return 0
-    mock_process.wait = mock_wait
+        mock_process = MagicMock()
+        mock_process.stderr = AsyncMock()
+        mock_process.returncode = 0
 
-    test_line = b'{"type":"text","content":"hello"}\n'
-    call_count = 0
-    async def mock_readline():
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            return test_line
-        return b""
-    mock_process.stdout = MagicMock()
-    mock_process.stdout.readline = mock_readline
+        async def mock_wait():
+            return 0
+        mock_process.wait = mock_wait
 
-    with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_process), \
-         patch("services.goose_manager.event_bus") as mock_bus:
-        mock_bus.emit = AsyncMock()
+        test_line = b'{"type":"text","content":"hello"}\n'
+        call_count = 0
+        async def mock_readline():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return test_line
+            return b""
+        mock_process.stdout = MagicMock()
+        mock_process.stdout.readline = mock_readline
 
-        chunks = []
-        async for chunk in manager.send_message(
-            agent_id="test-agent",
-            message="test",
-            system_prompt="test",
-            timeout=30,
-        ):
-            chunks.append(chunk)
+        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_process), \
+             patch("services.goose_manager.event_bus") as mock_bus:
+            mock_bus.emit = AsyncMock()
 
-        assert len(chunks) >= 1
-        assert manager._agents["test-agent"]["status"] == "idle"
+            chunks = []
+            async for chunk in manager.send_message(
+                agent_id="test-agent",
+                message="test",
+                system_prompt="test",
+                timeout=30,
+            ):
+                chunks.append(chunk)
+
+            assert len(chunks) >= 1
+            assert manager._agents["test-agent"]["status"] == "idle"
+    finally:
+        os.environ.pop("GOOSE_PATH", None)
+        gm_mod._GOOSE_PATH = None
 
 
 # ── Retry ─────────────────────────────────────────────────────────────

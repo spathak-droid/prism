@@ -56,5 +56,10 @@ async def send_through_pipeline(
             total_text += chunk.content
         yield chunk
 
+    from services.memory_manager import extract_memory_from_response, update_agent_memory
+    facts = extract_memory_from_response(total_text)
+    if facts:
+        update_agent_memory(agent_id, facts)
+
     estimated_tokens = len(total_text) // 4
     track_usage(db, agent_id, estimated_tokens)
