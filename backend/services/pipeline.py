@@ -17,6 +17,7 @@ async def send_through_pipeline(
     agent_data: dict,
     cwd: Optional[str] = None,
     max_turns: int = 15,
+    execution_id: Optional[str] = None,
 ) -> AsyncGenerator[StreamChunk, None]:
     guardrails = parse_guardrails(agent_data.get("guardrails", "{}"))
     if not check_rate_limit(db, agent_id, guardrails.get("rate_limit", 60)):
@@ -28,7 +29,12 @@ async def send_through_pipeline(
 
     base_prompt = agent_data.get("system_prompt", "You are a helpful AI agent.")
     skills = json.loads(agent_data.get("skills", "[]"))
-    assembled = build_prompt_with_skills(base_prompt, skills, db)
+    assembled = (
+        "IMPORTANT: You must follow the system prompt below. "
+        "Do NOT introduce yourself as Goose or describe generic capabilities. "
+        "Stay in character as defined below.\n\n"
+        + build_prompt_with_skills(base_prompt, skills, db)
+    )
 
     memory = json.loads(agent_data.get("memory", "{}"))
     if memory:
@@ -44,6 +50,7 @@ async def send_through_pipeline(
         system_prompt=assembled,
         cwd=cwd,
         max_turns=max_turns,
+        execution_id=execution_id,
     ):
         if chunk.type == "text":
             total_text += chunk.content

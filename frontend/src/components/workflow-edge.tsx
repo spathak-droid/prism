@@ -77,7 +77,7 @@ export function ConditionEdge({
     },
   };
 
-  const style = conditionStyles[condition];
+  const style = conditionStyles[condition] || conditionStyles["always"];
 
   return (
     <>

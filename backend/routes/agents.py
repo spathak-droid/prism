@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
 from db.database import get_db
-from db.models import Agent, Message, new_id, utcnow
+from db.models import Agent, AgentUsage, Event, Message, ProjectAgent, new_id, utcnow
 from services.goose_manager import goose_manager
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
@@ -67,8 +67,11 @@ def agent_to_dict(agent: Agent) -> dict:
 
 @router.get("")
 def list_agents(db: Session = Depends(get_db)):
+    # Exclude project-specific agents (they show on the project detail page)
+    project_agent_ids = {pa.agent_id for pa in db.query(ProjectAgent).all()}
     agents = db.query(Agent).filter(Agent.is_template == False).all()
-    return [agent_to_dict(a) for a in agents]
+    sandbox_agents = [a for a in agents if a.id not in project_agent_ids]
+    return [agent_to_dict(a) for a in sandbox_agents]
 
 
 @router.post("")
@@ -146,21 +149,96 @@ def delete_agent(agent_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/{agent_id}/activity")
-def get_activity(agent_id: str, limit: int = 50, db: Session = Depends(get_db)):
-    messages = (
-        db.query(Message)
-        .filter((Message.from_agent_id == agent_id) | (Message.to_agent_id == agent_id))
-        .order_by(Message.timestamp.desc())
+def get_activity(agent_id: str, limit: int = 200, execution_id: str | None = None, db: Session = Depends(get_db)):
+    # Combine events and messages for a full activity log
+    event_query = db.query(Event).filter(Event.agent_id == agent_id)
+    if execution_id:
+        event_query = event_query.filter(Event.execution_id == execution_id)
+    events = (
+        event_query
+        .order_by(Event.timestamp.asc())
         .limit(limit)
         .all()
     )
-    return [{
-        "id": m.id,
-        "fromAgentId": m.from_agent_id,
-        "toAgentId": m.to_agent_id,
-        "content": m.content,
-        "type": m.type,
-        "channel": m.channel,
-        "metadata": json.loads(m.meta),
-        "timestamp": m.timestamp,
-    } for m in reversed(messages)]
+    result = []
+    for e in events:
+        entry_type = "message"
+        if e.type == "agent:tool":
+            entry_type = e.tool_type or "tool_request"
+        elif e.type == "agent:status":
+            entry_type = "other"
+
+        result.append({
+            "id": e.id,
+            "content": e.content or e.status or "",
+            "type": entry_type,
+            "direction": e.direction,
+            "channel": e.channel,
+            "toolName": e.tool_name,
+            "timestamp": e.timestamp,
+            "metadata": json.loads(e.meta),
+        })
+
+    # Also include messages that may not have corresponding events
+    msg_query = db.query(Message).filter(
+        (Message.from_agent_id == agent_id) | (Message.to_agent_id == agent_id)
+    )
+    if execution_id:
+        msg_query = msg_query.filter(Message.workflow_execution_id == execution_id)
+    messages = (
+        msg_query
+        .order_by(Message.timestamp.asc())
+        .limit(limit)
+        .all()
+    )
+    seen_times = {e.timestamp for e in events}
+    for m in messages:
+        if m.timestamp not in seen_times:
+            result.append({
+                "id": m.id,
+                "content": m.content,
+                "type": m.type,
+                "direction": "outgoing" if m.from_agent_id == agent_id else "incoming",
+                "channel": m.channel,
+                "toolName": None,
+                "timestamp": m.timestamp,
+                "metadata": json.loads(m.meta),
+            })
+
+    result.sort(key=lambda x: x["timestamp"])
+    return result[:limit]
+
+
+@router.get("/{agent_id}/usage")
+def get_agent_usage(agent_id: str, db: Session = Depends(get_db)):
+    """Get token usage and message count for an agent."""
+    usage = db.query(AgentUsage).filter(AgentUsage.agent_id == agent_id).first()
+    msg_count = db.query(Message).filter(
+        (Message.from_agent_id == agent_id) | (Message.to_agent_id == agent_id)
+    ).count()
+    return {
+        "agentId": agent_id,
+        "messageCount": msg_count,
+        "approximateTokens": usage.approximate_tokens if usage else 0,
+        "lastResetAt": usage.last_reset_at if usage else None,
+    }
+
+
+@router.get("/usage/all")
+def get_all_usage(db: Session = Depends(get_db)):
+    """Get token usage summary for all agents."""
+    agents = db.query(Agent).filter(Agent.is_template == False).all()
+    result = []
+    for agent in agents:
+        usage = db.query(AgentUsage).filter(AgentUsage.agent_id == agent.id).first()
+        msg_count = db.query(Message).filter(
+            (Message.from_agent_id == agent.id) | (Message.to_agent_id == agent.id)
+        ).count()
+        result.append({
+            "agentId": agent.id,
+            "agentName": agent.name,
+            "model": agent.model,
+            "messageCount": msg_count,
+            "approximateTokens": usage.approximate_tokens if usage else 0,
+        })
+    return result

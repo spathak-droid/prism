@@ -19,6 +19,7 @@ import { Card } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import AgentForm from "@/components/agent-form";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -213,8 +214,12 @@ export default function AgentDetailPage() {
     } finally {
       setStreaming(false);
       abortRef.current = null;
+      // Refetch persisted messages and clear local ones to avoid duplicates
+      await fetchMessages(agentId, 50);
+      setLocalMessages([]);
+      setStreamingText(null);
     }
-  }, [agentId, input, streaming]);
+  }, [agentId, input, streaming, fetchMessages]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -223,8 +228,9 @@ export default function AgentDetailPage() {
     }
   };
 
+  const [deleteOpen, setDeleteOpen] = useState(false);
+
   const handleDelete = async () => {
-    if (!confirm("Delete this agent?")) return;
     await deleteAgent(agentId);
     router.push("/agents");
   };
@@ -309,7 +315,7 @@ export default function AgentDetailPage() {
                   variant="destructive"
                   size="sm"
                   className="flex-1"
-                  onClick={handleDelete}
+                  onClick={() => setDeleteOpen(true)}
                 >
                   <Trash2 className="h-3 w-3 mr-1" />
                   Delete
@@ -480,6 +486,14 @@ export default function AgentDetailPage() {
           }}
         />
       )}
+
+      <ConfirmDialog
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+        title="Delete agent"
+        description="Delete this agent? This cannot be undone."
+        onConfirm={handleDelete}
+      />
     </div>
   );
 }

@@ -35,6 +35,7 @@ class GooseManager:
         cwd: Optional[str] = None,
         max_turns: int = 15,
         extra_builtins: Optional[list[str]] = None,
+        execution_id: Optional[str] = None,
     ) -> AsyncGenerator[StreamChunk, None]:
         """Spawn a fresh Goose session and yield StreamChunks."""
         agent = self._agents.get(agent_id)
@@ -70,7 +71,10 @@ class GooseManager:
         os.makedirs(work_dir, exist_ok=True)
 
         agent["status"] = "running"
-        await event_bus.emit("agent:status", {"agent_id": agent_id, "status": "running"})
+        _evt = {"agent_id": agent_id, "status": "running"}
+        if execution_id:
+            _evt["execution_id"] = execution_id
+        await event_bus.emit("agent:status", _evt)
 
         try:
             process = await asyncio.create_subprocess_exec(
@@ -78,7 +82,13 @@ class GooseManager:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=work_dir,
-                env={**os.environ, "GOOSE_PROVIDER": agent["provider"], "GOOSE_MODEL": agent["model"]},
+                env={
+                    **os.environ,
+                    "GOOSE_PROVIDER": agent["provider"],
+                    "GOOSE_MODEL": agent["model"],
+                    # claude-code provider needs this to run headless without permission prompts
+                    "CLAUDE_DANGEROUSLY_SKIP_PERMISSIONS": "1",
+                },
             )
             self._processes[agent_id] = process
 
@@ -96,12 +106,15 @@ class GooseManager:
                     for chunk in parse_goose_line(complete_line):
                         # Emit tool events for monitoring
                         if chunk.type in ("tool_request", "tool_response"):
-                            await event_bus.emit("agent:tool", {
+                            tool_evt = {
                                 "agent_id": agent_id,
                                 "tool_name": chunk.tool_name or "unknown",
                                 "tool_type": chunk.type,
                                 "content": chunk.content,
-                            })
+                            }
+                            if execution_id:
+                                tool_evt["execution_id"] = execution_id
+                            await event_bus.emit("agent:tool", tool_evt)
                         yield chunk
 
             # Process remaining buffer
@@ -113,14 +126,20 @@ class GooseManager:
 
         except Exception as e:
             agent["status"] = "error"
-            await event_bus.emit("agent:status", {"agent_id": agent_id, "status": "error"})
+            err_evt = {"agent_id": agent_id, "status": "error"}
+            if execution_id:
+                err_evt["execution_id"] = execution_id
+            await event_bus.emit("agent:status", err_evt)
             yield StreamChunk(type="text", content=f"Error: {str(e)}")
             return
         finally:
             self._processes.pop(agent_id, None)
 
         agent["status"] = "idle"
-        await event_bus.emit("agent:status", {"agent_id": agent_id, "status": "idle"})
+        idle_evt = {"agent_id": agent_id, "status": "idle"}
+        if execution_id:
+            idle_evt["execution_id"] = execution_id
+        await event_bus.emit("agent:status", idle_evt)
 
     def kill_agent(self, agent_id: str) -> bool:
         process = self._processes.get(agent_id)

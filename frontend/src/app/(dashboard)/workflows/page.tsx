@@ -192,8 +192,13 @@ export default function WorkflowsPage() {
     }
   }, [pendingProject, createProject, clearPendingProject, router]);
 
+  useEffect(() => {
+    if (isProjectMode && !pendingProject) {
+      router.push("/projects");
+    }
+  }, [isProjectMode, pendingProject, router]);
+
   if (isProjectMode && !pendingProject) {
-    router.push("/projects");
     return null;
   }
 
@@ -313,7 +318,7 @@ export default function WorkflowsPage() {
               <Card
                 key={wf.id}
                 className="p-4 cursor-pointer hover:border-primary/50 hover:bg-muted/50 hover:shadow-md hover:scale-[1.02] transition-all duration-200"
-                onClick={() => handleEdit(wf)}
+                onClick={() => router.push(`/workflows/${wf.id}`)}
               >
                 <div className="flex items-start justify-between">
                   <div className="min-w-0 flex-1">

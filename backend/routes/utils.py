@@ -38,3 +38,12 @@ def list_skills(db: Session = Depends(get_db)):
 @router.post("/api/demo/setup")
 def demo_setup(db: Session = Depends(get_db)):
     return setup_demo(db)
+
+
+@router.get("/api/telegram/status")
+def telegram_status():
+    try:
+        from services.telegram_bot import telegram_bot
+        return {"running": telegram_bot.running, "botUsername": None}
+    except Exception:
+        return {"running": False, "botUsername": None}

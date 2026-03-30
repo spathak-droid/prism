@@ -33,5 +33,26 @@ def get_db():
 
 
 def init_db():
-    """Create all tables."""
+    """Create all tables and run lightweight migrations for new columns."""
     Base.metadata.create_all(bind=engine)
+    _migrate(engine)
+
+
+def _migrate(eng):
+    """Add columns that create_all won't add to existing tables."""
+    import sqlalchemy
+    with eng.connect() as conn:
+        # Check if workflows.last_execution_id exists
+        try:
+            conn.execute(sqlalchemy.text("SELECT last_execution_id FROM workflows LIMIT 1"))
+        except Exception:
+            conn.execute(sqlalchemy.text("ALTER TABLE workflows ADD COLUMN last_execution_id TEXT"))
+            conn.commit()
+
+        # Add model/provider columns to agent_templates
+        try:
+            conn.execute(sqlalchemy.text("SELECT model FROM agent_templates LIMIT 1"))
+        except Exception:
+            conn.execute(sqlalchemy.text("ALTER TABLE agent_templates ADD COLUMN model TEXT NOT NULL DEFAULT 'claude-opus-4-20250514'"))
+            conn.execute(sqlalchemy.text("ALTER TABLE agent_templates ADD COLUMN provider TEXT NOT NULL DEFAULT 'claude-code'"))
+            conn.commit()

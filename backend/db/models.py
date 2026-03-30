@@ -45,6 +45,8 @@ class AgentTemplate(Base):
     role = Column(Text, nullable=False)
     description = Column(Text, nullable=False, default="")
     system_prompt = Column(Text, nullable=False)
+    model = Column(Text, nullable=False, default="claude-opus-4-20250514")
+    provider = Column(Text, nullable=False, default="claude-code")
     skills = Column(Text, nullable=False, default="[]")
     tools = Column(Text, nullable=False, default="[]")
     category = Column(Text, nullable=False, default="custom")
@@ -99,6 +101,7 @@ class Workflow(Base):
     edges = Column(Text, nullable=False, default="[]")
     is_template = Column(Boolean, nullable=False, default=False)
     status = Column(Text, nullable=False, default="draft")
+    last_execution_id = Column(Text, nullable=True)
     created_at = Column(Text, nullable=False, default=utcnow)
     updated_at = Column(Text, nullable=False, default=utcnow)
 
@@ -143,6 +146,25 @@ class ApprovalGate(Base):
     feedback = Column(Text, nullable=True)
     resolved_at = Column(Text, nullable=True)
     created_at = Column(Text, nullable=False, default=utcnow)
+
+
+class Event(Base):
+    __tablename__ = "events"
+
+    id = Column(Text, primary_key=True, default=new_id)
+    type = Column(Text, nullable=False)
+    agent_id = Column(Text, nullable=True)
+    project_id = Column(Text, nullable=True)
+    channel = Column(Text, nullable=True)
+    direction = Column(Text, nullable=True)
+    status = Column(Text, nullable=True)
+    content = Column(Text, nullable=True)
+    tool_name = Column(Text, nullable=True)
+    tool_type = Column(Text, nullable=True)
+    workflow_id = Column(Text, nullable=True)
+    execution_id = Column(Text, nullable=True)
+    meta = Column("metadata", Text, nullable=False, default="{}")
+    timestamp = Column(Text, nullable=False, default=utcnow)
 
 
 class AgentUsage(Base):

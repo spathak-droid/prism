@@ -1,7 +1,7 @@
 """Simple Factory SDLC graph: Planner → Coder → Reviewer → END"""
 from typing import TypedDict, Optional, Annotated
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.checkpoint.memory import MemorySaver
 from graphs.nodes import planner_node, coder_node, reviewer_node, check_review_outcome
 
 
@@ -36,6 +36,7 @@ def build_simple_graph():
         "pass": END,
         "fail_retry": "coder",
         "fail_escalate": END,
+        "more_tickets": "coder",
     })
 
     return graph
@@ -44,5 +45,4 @@ def build_simple_graph():
 async def get_simple_graph_runner():
     """Compile with SQLite checkpointer."""
     graph = build_simple_graph()
-    checkpointer = AsyncSqliteSaver.from_conn_string("data/factory.db")
-    return graph.compile(checkpointer=checkpointer)
+    return graph.compile(checkpointer=MemorySaver())

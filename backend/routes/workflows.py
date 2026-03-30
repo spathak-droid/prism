@@ -8,6 +8,7 @@ from db.database import get_db, SessionLocal
 from db.models import Workflow, WorkflowExecution, new_id, utcnow
 from graphs.sandbox import build_sandbox_graph, SandboxState
 from services.event_bus import event_bus
+from services.goose_manager import goose_manager
 
 router = APIRouter(prefix="/api/workflows", tags=["workflows"])
 
@@ -50,9 +51,42 @@ def create_workflow(req: CreateWorkflowRequest, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(workflow)
     return {
-        "id": workflow.id, "name": workflow.name,
+        "id": workflow.id, "name": workflow.name, "description": workflow.description,
         "nodes": json.loads(workflow.nodes), "edges": json.loads(workflow.edges),
+        "isTemplate": workflow.is_template, "status": workflow.status,
+        "createdAt": workflow.created_at, "updatedAt": workflow.updated_at,
     }
+
+
+@router.get("/executions/{execution_id}")
+def get_execution(execution_id: str, db: Session = Depends(get_db)):
+    e = db.query(WorkflowExecution).filter(WorkflowExecution.id == execution_id).first()
+    if not e:
+        raise HTTPException(status_code=404, detail="Execution not found")
+    return {
+        "id": e.id,
+        "workflowId": e.workflow_id,
+        "projectId": e.project_id,
+        "status": e.status,
+        "context": json.loads(e.context),
+        "startedAt": e.started_at,
+        "completedAt": e.completed_at,
+    }
+
+
+@router.post("/executions/{execution_id}/stop")
+def stop_execution(execution_id: str, db: Session = Depends(get_db)):
+    e = db.query(WorkflowExecution).filter(WorkflowExecution.id == execution_id).first()
+    if not e:
+        raise HTTPException(status_code=404, detail="Execution not found")
+
+    # Kill all goose processes for agents involved
+    goose_manager.kill_all()
+
+    e.status = "stopped"
+    e.completed_at = utcnow()
+    db.commit()
+    return {"status": "stopped"}
 
 
 @router.get("/{workflow_id}")
@@ -67,6 +101,7 @@ def get_workflow(workflow_id: str, db: Session = Depends(get_db)):
         "id": w.id, "name": w.name, "description": w.description,
         "nodes": json.loads(w.nodes), "edges": json.loads(w.edges),
         "isTemplate": w.is_template, "status": w.status,
+        "lastExecutionId": w.last_execution_id,
         "executions": [{
             "id": e.id, "status": e.status,
             "startedAt": e.started_at, "completedAt": e.completed_at,
@@ -87,7 +122,13 @@ def update_workflow(workflow_id: str, req: UpdateWorkflowRequest, db: Session = 
     if req.status is not None: w.status = req.status
     w.updated_at = utcnow()
     db.commit()
-    return {"updated": True}
+    db.refresh(w)
+    return {
+        "id": w.id, "name": w.name, "description": w.description,
+        "nodes": json.loads(w.nodes), "edges": json.loads(w.edges),
+        "isTemplate": w.is_template, "status": w.status,
+        "createdAt": w.created_at, "updatedAt": w.updated_at,
+    }
 
 
 @router.delete("/{workflow_id}")
@@ -100,14 +141,24 @@ def delete_workflow(workflow_id: str, db: Session = Depends(get_db)):
     return {"deleted": True}
 
 
+class ExecuteWorkflowRequest(BaseModel):
+    input: Optional[str] = None
+    cwd: Optional[str] = None
+
+
 @router.post("/{workflow_id}/execute")
-async def execute_workflow(workflow_id: str, db: Session = Depends(get_db)):
+async def execute_workflow(workflow_id: str, body: ExecuteWorkflowRequest = ExecuteWorkflowRequest(), db: Session = Depends(get_db)):
     w = db.query(Workflow).filter(Workflow.id == workflow_id).first()
     if not w:
         raise HTTPException(status_code=404, detail="Workflow not found")
 
     nodes = json.loads(w.nodes)
     edges = json.loads(w.edges)
+
+    # Validate all nodes have agents assigned
+    unmapped = [n.get("data", {}).get("label", n["id"]) for n in nodes if not n.get("data", {}).get("agentId")]
+    if unmapped:
+        raise HTTPException(status_code=400, detail=f"Assign agents to all nodes before executing. Unmapped: {', '.join(unmapped)}")
 
     execution_id = new_id()
     now = utcnow()
@@ -117,6 +168,7 @@ async def execute_workflow(workflow_id: str, db: Session = Depends(get_db)):
         started_at=now,
     )
     db.add(execution)
+    w.last_execution_id = execution_id
     db.commit()
 
     await event_bus.emit("workflow:started", {
@@ -124,7 +176,7 @@ async def execute_workflow(workflow_id: str, db: Session = Depends(get_db)):
     })
 
     # Run in background
-    asyncio.create_task(_run_workflow(execution_id, workflow_id, nodes, edges))
+    asyncio.create_task(_run_workflow(execution_id, workflow_id, nodes, edges, cwd=body.cwd, task_input=body.input))
 
     return {"executionId": execution_id, "status": "running"}
 
@@ -142,12 +194,14 @@ def stop_workflow(workflow_id: str, db: Session = Depends(get_db)):
     return {"stopped": len(executions)}
 
 
-async def _run_workflow(execution_id: str, workflow_id: str, nodes: list, edges: list):
+async def _run_workflow(execution_id: str, workflow_id: str, nodes: list, edges: list, cwd: str | None = None, task_input: str | None = None):
     """Run a sandbox workflow via LangGraph."""
+    import traceback
     db = SessionLocal()
     try:
-        graph = build_sandbox_graph(nodes, edges)
+        graph = build_sandbox_graph(nodes, edges, cwd=cwd)
         if not graph:
+            print(f"[workflow:{execution_id}] No graph built (no valid nodes)")
             return
 
         compiled = graph.compile()
@@ -159,25 +213,40 @@ async def _run_workflow(execution_id: str, workflow_id: str, nodes: list, edges:
             "current_node": None,
             "status": "running",
             "error": None,
+            "task_input": task_input or "",
         }
 
+        print(f"[workflow:{execution_id}] Starting execution with {len(nodes)} nodes, cwd={cwd}")
         result = await compiled.ainvoke(initial_state)
 
         execution = db.query(WorkflowExecution).filter(WorkflowExecution.id == execution_id).first()
         if execution:
             execution.status = "completed"
-            execution.context = json.dumps(result.get("node_results", {}))
+            execution.context = json.dumps({
+                "nodeResults": result.get("node_results", {}),
+                "currentNode": None,
+                "status": "completed",
+            })
             execution.completed_at = utcnow()
             db.commit()
 
+        print(f"[workflow:{execution_id}] Completed successfully")
         await event_bus.emit("workflow:completed", {
             "workflow_id": workflow_id, "execution_id": execution_id,
         })
 
     except Exception as e:
+        print(f"[workflow:{execution_id}] FAILED: {e}")
+        traceback.print_exc()
         execution = db.query(WorkflowExecution).filter(WorkflowExecution.id == execution_id).first()
         if execution:
             execution.status = "failed"
+            execution.context = json.dumps({
+                "nodeResults": {},
+                "currentNode": None,
+                "status": "failed",
+                "error": str(e),
+            })
             execution.completed_at = utcnow()
             db.commit()
 

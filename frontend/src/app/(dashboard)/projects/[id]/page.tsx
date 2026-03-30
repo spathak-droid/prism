@@ -2,15 +2,22 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft, RotateCcw } from "lucide-react";
+import { ArrowLeft, RotateCcw, Square, Trash2 } from "lucide-react";
+import { ReactFlowProvider } from "reactflow";
 import { Button } from "@/components/ui/button";
 import ProjectPipeline, {
   PIPELINE_ICONS,
   type PipelineStep,
   type PipelineStepStatus,
 } from "@/components/project-pipeline";
+import dynamic from "next/dynamic";
 import AgentLogPanel from "@/components/agent-log-panel";
 import ApprovalBanner from "@/components/approval-banner";
+import { ConfirmDialog } from "@/components/confirm-dialog";
+import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Maximize2 } from "lucide-react";
+
+const ProjectFlow = dynamic(() => import("@/components/project-flow"), { ssr: false });
 import { cn } from "@/lib/utils";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -29,6 +36,22 @@ interface ApprovalGate {
   payload: { summary?: string; filesToReview?: string[] };
 }
 
+interface PipelinePhase {
+  status: string;
+  reason?: string | null;
+  started_at?: string;
+  completed_at?: string;
+}
+
+interface ProjectState {
+  pipeline?: {
+    current_phase?: string;
+    phases?: Record<string, PipelinePhase>;
+  };
+  plan?: unknown;
+  research?: unknown;
+}
+
 interface ProjectDetail {
   id: string;
   name: string;
@@ -39,6 +62,7 @@ interface ProjectDetail {
   config: Record<string, unknown>;
   agents: ProjectAgent[];
   approvalGates: ApprovalGate[];
+  state: ProjectState | null;
 }
 
 // ─── Status badge ─────────────────────────────────────────────────────────────
@@ -69,56 +93,47 @@ function StatusBadge({ status }: { status: string }) {
 
 // ─── Pipeline derivation ──────────────────────────────────────────────────────
 
-function derivePipelineSteps(status: string, complexity: string): PipelineStep[] {
-  const isSimple = complexity !== "large";
+function derivePipelineSteps(project: ProjectDetail): PipelineStep[] {
+  const phases = project.state?.pipeline?.phases;
 
-  const allSteps: Array<{ label: string; iconKey: string }> = isSimple
+  // Define which steps to show based on complexity
+  const isSimple = project.complexity === "simple";
+  const stepDefs: Array<{ label: string; iconKey: string; phaseKey: string }> = isSimple
     ? [
-        { label: "Planner", iconKey: "Planner" },
-        { label: "Builder", iconKey: "Builder" },
-        { label: "Reviewer", iconKey: "Reviewer" },
+        { label: "Planner", iconKey: "Planner", phaseKey: "planner" },
+        { label: "Builder", iconKey: "Builder", phaseKey: "coder" },
+        { label: "Reviewer", iconKey: "Reviewer", phaseKey: "reviewer" },
       ]
     : [
-        { label: "Researcher", iconKey: "Researcher" },
-        { label: "Planner", iconKey: "Planner" },
-        { label: "Plan Approval", iconKey: "Plan Approval" },
-        { label: "Builder", iconKey: "Builder" },
-        { label: "Reviewer", iconKey: "Reviewer" },
+        { label: "Researcher", iconKey: "Researcher", phaseKey: "researcher" },
+        { label: "Planner", iconKey: "Planner", phaseKey: "planner" },
+        { label: "Plan Approval", iconKey: "Plan Approval", phaseKey: "approval" },
+        { label: "Builder", iconKey: "Builder", phaseKey: "coder" },
+        { label: "Reviewer", iconKey: "Reviewer", phaseKey: "reviewer" },
       ];
 
-  const statusMap: Record<string, PipelineStepStatus[]> = isSimple
-    ? {
-        planning: ["running", "pending", "pending"],
-        "resuming:planning": ["running", "pending", "pending"],
-        building: ["complete", "running", "pending"],
-        "resuming:building": ["complete", "running", "pending"],
-        reviewing: ["complete", "complete", "running"],
-        complete: ["complete", "complete", "complete"],
-        completed: ["complete", "complete", "complete"],
-        failed: ["failed", "failed", "failed"],
-      }
-    : {
-        planning: ["running", "pending", "pending", "pending", "pending"],
-        "resuming:planning": ["running", "pending", "pending", "pending", "pending"],
-        approved: ["complete", "running", "pending", "pending", "pending"],
-        awaiting_approval: ["complete", "complete", "paused", "pending", "pending"],
-        "resuming:awaiting_approval": ["complete", "complete", "paused", "pending", "pending"],
-        building: ["complete", "complete", "complete", "running", "pending"],
-        "resuming:building": ["complete", "complete", "complete", "running", "pending"],
-        reviewing: ["complete", "complete", "complete", "complete", "running"],
-        complete: ["complete", "complete", "complete", "complete", "complete"],
-        completed: ["complete", "complete", "complete", "complete", "complete"],
-        failed: ["failed", "failed", "failed", "failed", "failed"],
-      };
+  return stepDefs.map((step) => {
+    const phase = phases?.[step.phaseKey];
+    let stepStatus: PipelineStepStatus = "pending";
 
-  const defaultStatuses = allSteps.map(() => "pending" as PipelineStepStatus);
-  const statuses: PipelineStepStatus[] = statusMap[status] ?? defaultStatuses;
+    if (phase) {
+      if (phase.status === "completed") stepStatus = "complete";
+      else if (phase.status === "in_progress") stepStatus = "running";
+      else if (phase.status === "skipped") stepStatus = "complete";
+      else if (phase.status === "pending") stepStatus = "pending";
+    }
 
-  return allSteps.map((step, i) => ({
-    label: step.label,
-    icon: PIPELINE_ICONS[step.label] ?? PIPELINE_ICONS["Researcher"],
-    status: statuses[i],
-  }));
+    // If project failed and this phase was pending, leave as pending
+    if (project.status === "failed" && stepStatus === "running") {
+      stepStatus = "failed";
+    }
+
+    return {
+      label: step.label,
+      icon: PIPELINE_ICONS[step.iconKey] ?? PIPELINE_ICONS["Researcher"],
+      status: stepStatus,
+    };
+  });
 }
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
@@ -169,6 +184,7 @@ export default function ProjectDetailPage() {
   }, [fetchProject]);
 
   const [retrying, setRetrying] = useState(false);
+  const [stopping, setStopping] = useState(false);
 
   const handleRetry = useCallback(async () => {
     if (!project) return;
@@ -183,13 +199,44 @@ export default function ProjectDetailPage() {
     }
   }, [project, projectId, fetchProject]);
 
+  const handleStop = useCallback(async () => {
+    if (!project) return;
+    setStopping(true);
+    try {
+      await fetch(`/api/projects/${projectId}/stop`, { method: "POST" });
+      await fetchProject();
+    } catch {
+      // ignore
+    } finally {
+      setStopping(false);
+    }
+  }, [project, projectId, fetchProject]);
+
+  const [deleteOpen, setDeleteOpen] = useState(false);
+
+  const handleDelete = useCallback(async () => {
+    if (!project) return;
+    try {
+      await fetch(`/api/projects/${projectId}`, { method: "DELETE" });
+      router.push("/projects");
+    } catch {
+      // ignore
+    }
+  }, [project, projectId, router]);
+
   const pendingApproval = project?.approvalGates.find(
     (g) => g.status === "pending"
   );
 
-  const pipelineSteps = project
-    ? derivePipelineSteps(project.status, project.complexity || "medium")
-    : [];
+  // Check if approval is pending via state (even if no approval gate in DB)
+  const approvalPendingViaState =
+    project?.state?.pipeline?.phases?.approval?.status === "pending";
+  const needsApproval = !!pendingApproval || approvalPendingViaState;
+  const hasPlan = !!project?.state?.plan;
+
+  const [showPlan, setShowPlan] = useState(false);
+
+  const pipelineSteps = project ? derivePipelineSteps(project) : [];
 
   if (loading) {
     return (
@@ -211,6 +258,8 @@ export default function ProjectDetailPage() {
   }
 
   return (
+    <>
+    <ReactFlowProvider>
     <div className="flex h-full overflow-hidden">
       {/* ── Left panel ──────────────────────────────────────────────────────── */}
       <aside className="flex w-80 shrink-0 flex-col gap-4 overflow-y-auto border-r border-border p-4">
@@ -230,6 +279,18 @@ export default function ProjectDetailPage() {
           <h2 className="font-semibold text-sm leading-snug">{project.name}</h2>
           <div className="flex items-center gap-2">
             <StatusBadge status={project.status} />
+            {["planning", "building", "reviewing"].includes(project.status) && (
+              <Button
+                variant="destructive"
+                size="sm"
+                className="h-6 px-2 text-[11px]"
+                onClick={handleStop}
+                disabled={stopping}
+              >
+                <Square className="mr-1 h-3 w-3" />
+                {stopping ? "Stopping..." : "Stop"}
+              </Button>
+            )}
             {project.status === "failed" && (
               <Button
                 variant="outline"
@@ -242,6 +303,14 @@ export default function ProjectDetailPage() {
                 {retrying ? "Retrying..." : "Retry"}
               </Button>
             )}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 px-2 text-[11px] text-muted-foreground hover:text-destructive"
+              onClick={() => setDeleteOpen(true)}
+            >
+              <Trash2 className="h-3 w-3" />
+            </Button>
           </div>
           {project.brief && (
             <p className="text-xs text-muted-foreground line-clamp-3 leading-relaxed">
@@ -257,9 +326,29 @@ export default function ProjectDetailPage() {
 
         {/* Pipeline */}
         <div className="space-y-2">
-          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground px-1">
-            Pipeline
-          </p>
+          <div className="flex items-center justify-between px-1">
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              Pipeline
+            </p>
+            <Dialog>
+              <DialogTrigger asChild>
+                <Button variant="ghost" size="sm" className="h-6 w-6 p-0">
+                  <Maximize2 className="h-3.5 w-3.5 text-muted-foreground" />
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="max-w-[90vw] w-[90vw] h-[80vh] p-0">
+                <DialogTitle className="sr-only">Pipeline Flow</DialogTitle>
+                <div className="h-full w-full">
+                  <ProjectFlow
+                    complexity={project.complexity}
+                    agents={project.agents}
+                    state={project.state}
+                    projectStatus={project.status}
+                  />
+                </div>
+              </DialogContent>
+            </Dialog>
+          </div>
           <ProjectPipeline steps={pipelineSteps} />
         </div>
 
@@ -270,7 +359,10 @@ export default function ProjectDetailPage() {
               Agents
             </p>
             <div className="space-y-1">
-              {project.agents.map((agent) => (
+              {[...project.agents].sort((a, b) => {
+                const order: Record<string, number> = { researcher: 0, planner: 1, coder: 2, reviewer: 3, deployer: 4 };
+                return (order[a.role] ?? 99) - (order[b.role] ?? 99);
+              }).map((agent) => (
                 <button
                   key={agent.id}
                   onClick={() => setSelectedAgentId(agent.id)}
@@ -312,6 +404,74 @@ export default function ProjectDetailPage() {
           </div>
         )}
 
+        {/* State-based approval (no gate in DB but state says pending) */}
+        {!pendingApproval && approvalPendingViaState && (
+          <div className="shrink-0 p-4 border-b border-border">
+            <div className="rounded-lg border-2 border-amber-500/60 bg-amber-950/10 p-4 space-y-3">
+              <div className="space-y-1">
+                <h3 className="font-semibold text-amber-400 text-sm">Plan Approval Required</h3>
+                <p className="text-sm text-foreground/90">
+                  Review the plan below and approve to start building.
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  size="sm"
+                  className="bg-green-600 hover:bg-green-700 text-white"
+                  onClick={async () => {
+                    await fetch(`/api/projects/${projectId}/approve`, { method: "POST" });
+                    await fetchProject();
+                  }}
+                >
+                  Approve Plan
+                </Button>
+                {!showPlan && hasPlan && (
+                  <Button size="sm" variant="outline" onClick={() => setShowPlan(true)}>
+                    View Plan
+                  </Button>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Plan viewer - show when toggled or when approval pending */}
+        {hasPlan && (showPlan || needsApproval) && (
+          <div className="shrink-0 border-b border-border overflow-y-auto max-h-[50%]">
+            <div className="p-4">
+              <div className="rounded-lg border border-border bg-muted/30 p-4 space-y-2">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    Plan
+                  </h4>
+                  {!needsApproval && (
+                    <button
+                      className="text-xs text-muted-foreground hover:text-foreground"
+                      onClick={() => setShowPlan(false)}
+                    >
+                      Hide
+                    </button>
+                  )}
+                </div>
+                <pre className="text-xs text-foreground/90 whitespace-pre-wrap break-words font-mono leading-relaxed max-h-[40vh] overflow-y-auto">
+                  {typeof project.state?.plan === "string"
+                    ? project.state.plan
+                    : JSON.stringify(project.state?.plan, null, 2)}
+                </pre>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* View plan button when not in approval mode */}
+        {hasPlan && !needsApproval && !showPlan && (
+          <div className="shrink-0 px-4 pt-3">
+            <Button size="sm" variant="outline" onClick={() => setShowPlan(true)}>
+              View Plan
+            </Button>
+          </div>
+        )}
+
         {/* Agent logs */}
         <div className="flex-1 overflow-hidden">
           {selectedAgentId ? (
@@ -324,5 +484,15 @@ export default function ProjectDetailPage() {
         </div>
       </main>
     </div>
+    </ReactFlowProvider>
+
+    <ConfirmDialog
+      open={deleteOpen}
+      onOpenChange={setDeleteOpen}
+      title="Delete project"
+      description={`Delete "${project?.name}"? This cannot be undone.`}
+      onConfirm={handleDelete}
+    />
+    </>
   );
 }

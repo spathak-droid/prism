@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from db.database import get_db
-from db.models import Project, ProjectAgent, Agent, ApprovalGate, utcnow
+from db.models import Project, ProjectAgent, Agent, ApprovalGate, Message, Event, WorkflowExecution, utcnow
 from services.project_factory import create_project
 from services.goose_manager import goose_manager
 from contracts.state import read_state, update_phase
@@ -166,6 +166,35 @@ def stop_project(project_id: str, db: Session = Depends(get_db)):
     db.commit()
 
     return {"stopped": True, "killed": killed}
+
+
+@router.delete("/{project_id}")
+def delete_project(project_id: str, db: Session = Depends(get_db)):
+    """Delete a project and all associated data."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # Kill any running agents first
+    pa_rows = db.query(ProjectAgent).filter(ProjectAgent.project_id == project_id).all()
+    agent_ids = [pa.agent_id for pa in pa_rows]
+    for aid in agent_ids:
+        goose_manager.kill_agent(aid)
+
+    # Delete related records
+    db.query(ApprovalGate).filter(ApprovalGate.project_id == project_id).delete()
+    db.query(WorkflowExecution).filter(WorkflowExecution.project_id == project_id).delete()
+    db.query(Message).filter(Message.from_agent_id.in_(agent_ids)).delete(synchronize_session=False)
+    db.query(Message).filter(Message.to_agent_id.in_(agent_ids)).delete(synchronize_session=False)
+    db.query(Event).filter(Event.project_id == project_id).delete()
+    db.query(Event).filter(Event.agent_id.in_(agent_ids)).delete(synchronize_session=False)
+    db.query(ProjectAgent).filter(ProjectAgent.project_id == project_id).delete()
+    # Delete the project-specific agents
+    db.query(Agent).filter(Agent.id.in_(agent_ids)).delete(synchronize_session=False)
+    db.delete(project)
+    db.commit()
+
+    return {"deleted": True}
 
 
 @router.put("/{project_id}")

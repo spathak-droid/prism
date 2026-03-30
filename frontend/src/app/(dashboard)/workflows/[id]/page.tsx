@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import ReactFlow, {
   Background,
@@ -22,8 +22,9 @@ import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { toast } from "sonner";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { ArrowLeft, Play, RefreshCw } from "lucide-react";
+import { ArrowLeft, Play, RefreshCw, Square } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import Link from "next/link";
 
@@ -43,6 +44,7 @@ interface WorkflowData {
   nodes: Node<AgentNodeData>[];
   edges: Edge<ConditionEdgeData>[];
   status: string;
+  lastExecutionId?: string;
 }
 
 interface ExecutionData {
@@ -72,6 +74,41 @@ function WorkflowDetailContent() {
   const [executing, setExecuting] = useState(false);
   const [taskInput, setTaskInput] = useState("");
   const [selectedResult, setSelectedResult] = useState<{ label: string; content: string } | null>(null);
+  const [dismissedExecutionId, setDismissedExecutionId] = useState<string | null>(null);
+  const executionRef = useRef<ExecutionData | null>(null);
+
+  // Keep ref in sync so cleanup can access latest value
+  useEffect(() => {
+    executionRef.current = execution;
+  }, [execution]);
+
+  // Stop execution on unmount (navigate away) to avoid wasting tokens
+  useEffect(() => {
+    return () => {
+      const exec = executionRef.current;
+      if (exec && exec.status === "running") {
+        // Use sendBeacon for reliable delivery during page unload
+        const url = `/api/workflows/executions/${exec.id}/stop`;
+        if (navigator.sendBeacon) {
+          navigator.sendBeacon(url);
+        } else {
+          fetch(url, { method: "POST", keepalive: true });
+        }
+      }
+    };
+  }, []);
+
+  // Also stop on browser tab close / refresh
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      const exec = executionRef.current;
+      if (exec && exec.status === "running") {
+        navigator.sendBeacon(`/api/workflows/executions/${exec.id}/stop`);
+      }
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, []);
 
   const fetchWorkflow = useCallback(async () => {
     try {
@@ -79,6 +116,10 @@ function WorkflowDetailContent() {
       if (!res.ok) throw new Error("Failed to fetch");
       const data: WorkflowData = await res.json();
       setWorkflow(data);
+      // Auto-reconnect to last execution if we don't have one yet
+      if (data.lastExecutionId && !execution && !executionIdParam) {
+        fetchExecution(data.lastExecutionId);
+      }
     } catch (err) {
       console.error("Failed to fetch workflow:", err);
     }
@@ -104,21 +145,43 @@ function WorkflowDetailContent() {
     fetchWorkflow().finally(() => setLoading(false));
   }, [fetchWorkflow]);
 
-  // Poll execution status
+  // Poll workflow to pick up new executions (e.g. triggered from Telegram)
   useEffect(() => {
-    if (!executionIdParam) return;
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/workflows/${workflowId}`);
+        if (!res.ok) return;
+        const data: WorkflowData = await res.json();
+        setWorkflow(data);
+        // If there's a new execution we don't know about (and not dismissed), start tracking it
+        if (data.lastExecutionId && data.lastExecutionId !== dismissedExecutionId && (!execution || execution.id !== data.lastExecutionId)) {
+          fetchExecution(data.lastExecutionId);
+        }
+      } catch {}
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [workflowId, execution, fetchExecution, dismissedExecutionId]);
 
-    fetchExecution(executionIdParam);
+  // Poll execution status — works for both URL param and auto-reconnected executions
+  const activeExecutionId = executionIdParam || execution?.id;
+  useEffect(() => {
+    if (!activeExecutionId) return;
+
+    // Only fetch if we don't already have it loaded
+    if (!execution || execution.id !== activeExecutionId) {
+      fetchExecution(activeExecutionId);
+    }
 
     const interval = setInterval(async () => {
-      const data = await fetchExecution(executionIdParam);
-      if (data && (data.status === "completed" || data.status === "failed")) {
+      const data = await fetchExecution(activeExecutionId);
+      if (data && data.status !== "running") {
         clearInterval(interval);
       }
     }, 2000);
 
     return () => clearInterval(interval);
-  }, [executionIdParam, fetchExecution]);
+  }, [activeExecutionId, fetchExecution]);
+
 
   // Update node statuses based on execution context
   const displayNodes = React.useMemo(() => {
@@ -126,10 +189,11 @@ function WorkflowDetailContent() {
     if (!execution) return workflow.nodes;
 
     return workflow.nodes.map((node) => {
-      const ctx = execution.context;
+      const ctx = execution.context || {};
+      const nodeResults = ctx.nodeResults || {};
       let nodeStatus: "idle" | "running" | "completed" | "error" = "idle";
 
-      if (ctx.nodeResults[node.id]) {
+      if (nodeResults[node.id]) {
         nodeStatus = "completed";
       }
       if (ctx.currentNode === node.id && execution.status === "running") {
@@ -148,10 +212,11 @@ function WorkflowDetailContent() {
 
   const handleExecute = useCallback(async () => {
     if (!taskInput.trim()) {
-      alert("Enter a task description before executing.");
+      toast.error("Enter a task description before executing.");
       return;
     }
     setExecuting(true);
+    setDismissedExecutionId(null);
     try {
       const res = await fetch(`/api/workflows/${workflowId}/execute`, {
         method: "POST",
@@ -160,7 +225,7 @@ function WorkflowDetailContent() {
       });
       if (!res.ok) {
         const errData = await res.json();
-        alert(`Execution failed: ${errData.error}`);
+        toast.error(`Execution failed: ${errData.error || "Unknown error"}`);
         return;
       }
       const { executionId } = await res.json();
@@ -220,10 +285,38 @@ function WorkflowDetailContent() {
             </p>
           )}
         </div>
+        {execution?.status === "running" ? (
+          <Button
+            size="sm"
+            variant="destructive"
+            onClick={async () => {
+              await fetch(`/api/workflows/executions/${execution.id}/stop`, { method: "POST" });
+              setDismissedExecutionId(execution.id);
+              setExecution(null);
+              setTaskInput("");
+            }}
+          >
+            <Square className="h-3.5 w-3.5 mr-1.5" />
+            Stop
+          </Button>
+        ) : execution ? (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              setDismissedExecutionId(execution.id);
+              setExecution(null);
+              setTaskInput("");
+            }}
+          >
+            <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
+            Reset
+          </Button>
+        ) : null}
         <Button
           size="sm"
           onClick={handleExecute}
-          disabled={executing || workflow.nodes.length === 0}
+          disabled={executing || workflow.nodes.length === 0 || execution?.status === "running"}
         >
           <Play className="h-3.5 w-3.5 mr-1.5" />
           {executing ? "Starting..." : "Execute"}
@@ -231,8 +324,9 @@ function WorkflowDetailContent() {
       </div>
 
       <div className="flex flex-1 overflow-hidden">
-        {/* Canvas */}
-        <div className="flex-1">
+        {/* Canvas + Agent Logs */}
+        <div className="flex flex-1 flex-col overflow-hidden">
+          <div className="flex-1">
           <ReactFlow
             nodes={displayNodes}
             edges={workflow.edges}
@@ -252,6 +346,9 @@ function WorkflowDetailContent() {
               nodeColor={() => "hsl(var(--primary))"}
             />
           </ReactFlow>
+          </div>
+
+          {/* Activity log removed — node results are shown in the Execution panel */}
         </div>
 
         {/* Execution Panel */}
@@ -276,10 +373,11 @@ function WorkflowDetailContent() {
                   className="w-full"
                   onClick={async () => {
                     await fetch(`/api/workflows/executions/${execution.id}/stop`, { method: "POST" });
-                    setExecution((prev) => prev ? { ...prev, status: "failed", context: { ...prev.context, status: "failed", error: "Stopped by user" } } : prev);
+                    setExecution((prev) => prev ? { ...prev, status: "stopped", context: { ...prev.context, status: "stopped", error: "Stopped by user" } } : prev);
                   }}
                 >
-                  Stop
+                  <Square className="h-3.5 w-3.5 mr-1.5" />
+                  Stop Execution
                 </Button>
               ) : (
                 <Button
@@ -329,11 +427,11 @@ function WorkflowDetailContent() {
                   </div>
                 )}
 
-                {execution.context.error && (
+                {execution.context?.error && (
                   <Card className="border-destructive">
                     <CardContent className="p-3">
                       <p className="text-xs text-destructive">
-                        {execution.context.error}
+                        {execution.context?.error}
                       </p>
                     </CardContent>
                   </Card>
@@ -342,7 +440,7 @@ function WorkflowDetailContent() {
                 {/* Node Results */}
                 <div className="space-y-2">
                   <h3 className="text-xs font-medium">Node Results</h3>
-                  {Object.entries(execution.context.nodeResults).map(
+                  {Object.entries(execution.context?.nodeResults || {}).map(
                     ([nodeId, result]) => {
                       const node = workflow.nodes.find((n) => n.id === nodeId);
                       const label = node?.data.label || nodeId;
@@ -365,7 +463,7 @@ function WorkflowDetailContent() {
                       );
                     }
                   )}
-                  {Object.keys(execution.context.nodeResults).length === 0 && (
+                  {Object.keys((execution.context?.nodeResults || {})).length === 0 && (
                     <p className="text-xs text-muted-foreground">
                       Waiting for results...
                     </p>

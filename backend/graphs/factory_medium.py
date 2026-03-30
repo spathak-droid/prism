@@ -1,7 +1,7 @@
 """Medium Factory SDLC graph: Researcher → Planner → Approval → Coder(s) → Reviewer → Deployer"""
 from typing import TypedDict, Optional
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.checkpoint.memory import MemorySaver
 from graphs.nodes import (
     researcher_node, planner_node, approval_gate_node,
     coder_node, reviewer_node, deployer_node, check_review_outcome,
@@ -44,6 +44,7 @@ def build_medium_graph():
         "pass": "deployer",
         "fail_retry": "coder",
         "fail_escalate": END,
+        "more_tickets": "coder",
     })
 
     graph.add_edge("deployer", END)
@@ -53,5 +54,32 @@ def build_medium_graph():
 
 async def get_medium_graph_runner():
     graph = build_medium_graph()
-    checkpointer = AsyncSqliteSaver.from_conn_string("data/factory.db")
-    return graph.compile(checkpointer=checkpointer, interrupt_before=["approval_gate"])
+    return graph.compile(checkpointer=MemorySaver(), interrupt_before=["approval_gate"])
+
+
+def build_post_approval_graph():
+    """Graph that starts from coder — used after plan approval."""
+    graph = StateGraph(MediumProjectState)
+
+    graph.add_node("coder", coder_node)
+    graph.add_node("reviewer", reviewer_node)
+    graph.add_node("deployer", deployer_node)
+
+    graph.set_entry_point("coder")
+    graph.add_edge("coder", "reviewer")
+
+    graph.add_conditional_edges("reviewer", check_review_outcome, {
+        "pass": "deployer",
+        "fail_retry": "coder",
+        "fail_escalate": END,
+        "more_tickets": "coder",
+    })
+
+    graph.add_edge("deployer", END)
+
+    return graph
+
+
+async def get_post_approval_runner():
+    graph = build_post_approval_graph()
+    return graph.compile()

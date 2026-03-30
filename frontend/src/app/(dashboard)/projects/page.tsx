@@ -2,10 +2,11 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { FolderKanban, Plus } from "lucide-react";
+import { FolderKanban, Plus, Trash2 } from "lucide-react";
 import { useProjectStore } from "@/lib/store";
 import { Button } from "@/components/ui/button";
 import NewProjectDialog from "@/components/new-project-dialog";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import { cn } from "@/lib/utils";
 
 interface Project {
@@ -58,43 +59,68 @@ function ComplexityBadge({ complexity }: { complexity: string }) {
 function ProjectCard({
   project,
   onClick,
+  onDelete,
 }: {
   project: Project;
   onClick: () => void;
+  onDelete: () => void;
 }) {
+  const [confirmOpen, setConfirmOpen] = useState(false);
+
   return (
-    <div
-      onClick={onClick}
-      className="cursor-pointer rounded-lg border border-border bg-card p-4 hover:bg-accent/50 transition-colors space-y-3"
-    >
-      <div className="flex items-start justify-between gap-2">
-        <h3 className="font-medium text-sm leading-snug">{project.name}</h3>
-        <StatusBadge status={project.status} />
-      </div>
+    <>
+      <div
+        onClick={onClick}
+        className="group cursor-pointer rounded-lg border border-border bg-card p-4 hover:bg-accent/50 transition-colors space-y-3 relative"
+      >
+        <div className="flex items-start justify-between gap-2">
+          <h3 className="font-medium text-sm leading-snug">{project.name}</h3>
+          <div className="flex items-center gap-2">
+            <StatusBadge status={project.status} />
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setConfirmOpen(true);
+              }}
+              className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-destructive/20 text-muted-foreground hover:text-destructive"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
 
-      {project.brief && (
-        <p className="text-xs text-muted-foreground line-clamp-2 leading-relaxed">
-          {project.brief}
-        </p>
-      )}
-
-      <div className="flex items-center justify-between gap-2">
-        {project.targetDir && (
-          <p className="font-mono text-[11px] text-muted-foreground/70 truncate flex-1">
-            {project.targetDir}
+        {project.brief && (
+          <p className="text-xs text-muted-foreground line-clamp-2 leading-relaxed">
+            {project.brief}
           </p>
         )}
-        {project.complexity && (
-          <ComplexityBadge complexity={project.complexity} />
-        )}
+
+        <div className="flex items-center justify-between gap-2">
+          {project.targetDir && (
+            <p className="font-mono text-[11px] text-muted-foreground/70 truncate flex-1">
+              {project.targetDir}
+            </p>
+          )}
+          {project.complexity && (
+            <ComplexityBadge complexity={project.complexity} />
+          )}
+        </div>
       </div>
-    </div>
+
+      <ConfirmDialog
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        title="Delete project"
+        description={`Delete "${project.name}"? This cannot be undone.`}
+        onConfirm={onDelete}
+      />
+    </>
   );
 }
 
 export default function ProjectsPage() {
   const router = useRouter();
-  const { projects, fetchProjects, loading } = useProjectStore();
+  const { projects, fetchProjects, deleteProject, loading } = useProjectStore();
   const [dialogOpen, setDialogOpen] = useState(false);
 
   useEffect(() => {
@@ -102,7 +128,7 @@ export default function ProjectsPage() {
   }, [fetchProjects]);
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -138,6 +164,7 @@ export default function ProjectsPage() {
               key={project.id}
               project={project}
               onClick={() => router.push(`/projects/${project.id}`)}
+              onDelete={() => deleteProject(project.id)}
             />
           ))}
         </div>

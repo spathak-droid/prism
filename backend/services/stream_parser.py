@@ -53,7 +53,7 @@ def parse_goose_line(line: str) -> list[StreamChunk]:
                 chunks.append(StreamChunk(
                     type="tool_response",
                     content=content[:1000] or "Done",
-                    tool_name="tool",
+                    tool_name=part.get("toolCallId", "tool"),
                 ))
         return chunks
 
@@ -80,8 +80,12 @@ def parse_goose_line(line: str) -> list[StreamChunk]:
                 chunks.append(StreamChunk(
                     type="tool_response",
                     content=content[:1000] or "Done",
-                    tool_name="tool",
+                    tool_name=part.get("toolCallId", "tool"),
                 ))
+        return chunks
+
+    # Skip Goose completion/metadata messages
+    if parsed.get("type") in ("complete", "usage", "metadata", "done"):
         return chunks
 
     # Fallback
