@@ -39,8 +39,16 @@ def verify_goose_available() -> str:
         raise RuntimeError(f"Goose found at {path} but failed to run: {e}")
 
 
-GOOSE_PATH = _get_goose_path()
+_GOOSE_PATH: Optional[str] = None
 DEFAULT_BUILTINS = ["developer", "analyze"]
+
+
+def get_goose_path() -> str:
+    """Lazy-initialize and cache the Goose binary path."""
+    global _GOOSE_PATH
+    if _GOOSE_PATH is None:
+        _GOOSE_PATH = _get_goose_path()
+    return _GOOSE_PATH
 
 
 class GooseManager:
@@ -87,7 +95,7 @@ class GooseManager:
                     builtins.append(b)
 
         args = [
-            GOOSE_PATH, "run",
+            get_goose_path(), "run",
             "-t", message,
             "--no-session",
             "--system", system_prompt,
@@ -212,12 +220,12 @@ class GooseManager:
             return
         finally:
             self._processes.pop(agent_id, None)
-
-        agent["status"] = "idle"
-        idle_evt = {"agent_id": agent_id, "status": "idle"}
-        if execution_id:
-            idle_evt["execution_id"] = execution_id
-        await event_bus.emit("agent:status", idle_evt)
+            if agent.get("status") == "running":
+                agent["status"] = "idle"
+                idle_evt = {"agent_id": agent_id, "status": "idle"}
+                if execution_id:
+                    idle_evt["execution_id"] = execution_id
+                await event_bus.emit("agent:status", idle_evt)
 
     def kill_agent(self, agent_id: str) -> bool:
         process = self._processes.get(agent_id)

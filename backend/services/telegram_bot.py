@@ -71,7 +71,17 @@ class TelegramBot:
         try:
             sessions = db.query(TelegramSession).all()
             for s in sessions:
+                agent = db.query(Agent).filter(Agent.id == s.agent_id).first()
+                if not agent:
+                    # Agent was deleted — clean up stale session
+                    db.query(TelegramSession).filter(TelegramSession.chat_id == s.chat_id).delete()
+                    continue
                 self._agent_map[s.chat_id] = s.agent_id
+                goose_manager.register_agent(
+                    agent.id, agent.name, agent.provider,
+                    agent.model, json.loads(agent.tools),
+                )
+            db.commit()
         finally:
             db.close()
 
