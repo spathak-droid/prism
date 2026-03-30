@@ -1,5 +1,5 @@
 #!/bin/bash
-# Factory v4 CLI — Create and monitor projects from the terminal
+# Prism CLI — Create and monitor projects from the terminal
 set -e
 
 GREEN='\033[0;32m'
@@ -12,7 +12,7 @@ BOLD='\033[1m'
 API="http://localhost:8000"
 
 usage() {
-    echo -e "${BOLD}Factory v4 CLI${NC}"
+    echo -e "${BOLD}Prism CLI${NC}"
     echo ""
     echo "Usage:"
     echo "  ./cli.sh new <name> <brief> <target_dir>  Create a new project"

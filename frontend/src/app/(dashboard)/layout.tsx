@@ -4,16 +4,19 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
 import {
-  FolderKanban,
   Bot,
   GitBranch,
   Activity,
   Settings,
   Menu,
   X,
+  FolderKanban,
 } from "lucide-react";
+import { FactoryLogoMark } from "@/components/factory-logo-mark";
+import { ArchitectureDiagram } from "@/components/architecture-diagram";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { Toaster } from "sonner";
 
 const navItems = [
   { href: "/projects", icon: FolderKanban, label: "Projects" },
@@ -29,10 +32,9 @@ function Sidebar({ onClose }: { onClose?: () => void }) {
   return (
     <div className="flex h-full flex-col bg-background border-r border-border w-64">
       {/* Header / Brand */}
-      <div className="flex items-center justify-between px-4 py-4 border-b border-border">
-        <Link href="/projects" className="flex items-center gap-2" onClick={onClose}>
-          <FolderKanban className="h-6 w-6 text-primary" />
-          <span className="text-lg font-semibold tracking-tight">Factory</span>
+      <div className="flex flex-col items-center justify-between px-4 py-6 border-b border-border">
+        <Link href="/" className="flex flex-col items-center" onClick={onClose}>
+          <FactoryLogoMark className="h-15 w-15" />
         </Link>
         {onClose && (
           <Button variant="ghost" size="icon" onClick={onClose} className="md:hidden">
@@ -65,8 +67,8 @@ function Sidebar({ onClose }: { onClose?: () => void }) {
       </nav>
 
       {/* Footer */}
-      <div className="px-4 py-3 border-t border-border">
-        <p className="text-xs text-muted-foreground">Factory v4.0.0</p>
+      <div className="px-3 py-3 border-t border-border space-y-1">
+        <p className="text-xs text-muted-foreground px-1">Prism v1.0.0</p>
       </div>
     </div>
   );
@@ -112,12 +114,13 @@ export default function DashboardLayout({
           >
             <Menu className="h-5 w-5" />
           </Button>
-          <FolderKanban className="h-5 w-5 text-primary" />
-          <span className="font-semibold">Factory</span>
+          <FactoryLogoMark className="h-6 w-6" />
+          <span className="font-semibold">Prism</span>
         </header>
 
-        <main className="flex-1 overflow-auto">{children}</main>
+        <main className="flex-1 overflow-auto p-6">{children}</main>
       </div>
+      <Toaster theme="dark" position="bottom-right" richColors />
     </div>
   );
 }

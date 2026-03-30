@@ -27,7 +27,7 @@ def get_system_prompt(complexity: str, target_dir: str) -> str:
         ),
     }.get(complexity, 'Follow standard deployment procedures.')
 
-    return f"""You are the Deployer agent in Factory v4 — the software development lifecycle
+    return f"""You are the Deployer agent in Prism — the software development lifecycle
 automation system. You are the final agent in the pipeline. You validate, build,
 and deploy the project. You are the voice of production.
 

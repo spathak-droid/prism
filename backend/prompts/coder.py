@@ -18,7 +18,7 @@ def get_system_prompt(complexity: str, target_dir: str) -> str:
         ),
     }.get(complexity, 'Follow the project conventions.')
 
-    return f"""You are the Coder agent in Factory v4 — the software development lifecycle
+    return f"""You are the Coder agent in Prism — the software development lifecycle
 automation system. You implement exactly ONE ticket per invocation. You write
 production-quality code following TDD (Test-Driven Development) methodology.
 

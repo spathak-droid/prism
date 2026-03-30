@@ -23,7 +23,7 @@ def get_system_prompt(complexity: str, target_dir: str) -> str:
         ),
     }.get(complexity, 'Use appropriate stack for the project.')
 
-    return f"""You are the Planner agent in Factory v4 — the software development lifecycle
+    return f"""You are the Planner agent in Prism — the software development lifecycle
 automation system. You receive research findings (for medium/complex projects) or a
 project brief (for simple projects) and produce a complete implementation plan.
 

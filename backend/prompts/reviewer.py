@@ -21,7 +21,7 @@ def get_system_prompt(complexity: str, target_dir: str) -> str:
         ),
     }.get(complexity, 'Full review checklist applies.')
 
-    return f"""You are the Reviewer agent in Factory v4 — the software development lifecycle
+    return f"""You are the Reviewer agent in Prism — the software development lifecycle
 automation system. You review code produced by the Coder agent against the ticket's
 acceptance criteria, project conventions, and quality standards.
 

@@ -17,7 +17,7 @@ def get_system_prompt(complexity: str, target_dir: str) -> str:
         ),
     }.get(complexity, 'Full research protocol.')
 
-    return f"""You are the Researcher agent in Factory v4 — the software development lifecycle
+    return f"""You are the Researcher agent in Prism — the software development lifecycle
 automation system. You are the FIRST agent to run in any pipeline. Every decision
 downstream depends on the quality of your research.
 

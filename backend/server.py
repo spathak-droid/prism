@@ -10,20 +10,35 @@ load_dotenv()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    import db.models  # noqa: F401 — ensure all models registered before create_all
     init_db()
-    print('[factory-v4] Database initialized')
+    print('[prism] Database initialized')
+    from db.database import SessionLocal
+    from services.demo_setup import setup_demo
+    db = SessionLocal()
+    try:
+        setup_demo(db)
+        print('[prism] Demo agents + templates seeded')
+    finally:
+        db.close()
     from services.scheduler import agent_scheduler
     agent_scheduler.start()
     agent_scheduler.load_all_schedules()
-    print('[factory-v4] Scheduler started')
+    print('[prism] Scheduler started')
+    from services.telegram_bot import telegram_bot
+    tg_token = os.getenv('TELEGRAM_BOT_TOKEN')
+    if tg_token:
+        await telegram_bot.start(tg_token)
+        print('[prism] Telegram bot started')
     yield
+    await telegram_bot.stop()
     agent_scheduler.stop()
     from services.goose_manager import goose_manager
     goose_manager.kill_all()
-    print('[factory-v4] Shutting down')
+    print('[prism] Shutting down')
 
 
-app = FastAPI(title="Factory v4", lifespan=lifespan)
+app = FastAPI(title="Prism", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -40,6 +55,7 @@ from routes.approvals import router as approvals_router
 from routes.streaming import router as streaming_router
 from routes.utils import router as utils_router
 from routes.workflows import router as workflows_router
+from routes.events import router as events_router
 
 app.include_router(agents_router)
 app.include_router(projects_router)
@@ -48,3 +64,4 @@ app.include_router(approvals_router)
 app.include_router(streaming_router)
 app.include_router(utils_router)
 app.include_router(workflows_router)
+app.include_router(events_router)
