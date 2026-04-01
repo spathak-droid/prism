@@ -322,8 +322,26 @@ async def planner_node(state: dict) -> dict:
         except Exception as e:
             print(f"[planner_node] Failed to parse PlanOutput: {e}")
 
+    # If JSON parse failed but agent may have written files, try to recover plan.md
+    if plan is None:
+        import os
+        plan_md_path = os.path.join(target_dir, "docs", "plan.md")
+        claude_md_path = os.path.join(target_dir, "CLAUDE.md")
+        if os.path.exists(plan_md_path) or os.path.exists(claude_md_path):
+            print(f"[planner_node] JSON parse failed but plan files exist on disk — marking failed so planner can retry")
+        update_phase(target_dir, "planner", {"status": "failed", "completed_at": utcnow()})
+        await event_bus.emit("project:update", {
+            "project_id": state["project_id"], "phase": "planner", "status": "failed",
+        })
+        return {
+            "plan": None,
+            "tickets": [],
+            "status": "failed",
+            "error": "Planner ran but produced no parseable plan JSON",
+        }
+
     state_data = read_state(target_dir)
-    if state_data and plan:
+    if state_data:
         state_data["plan"] = plan.model_dump()
     write_state(target_dir, state_data or {})
     update_phase(target_dir, "planner", {"status": "completed", "completed_at": utcnow()})
@@ -333,7 +351,7 @@ async def planner_node(state: dict) -> dict:
     })
 
     return {
-        "plan": plan.model_dump() if plan else None,
+        "plan": plan.model_dump(),
         "tickets": tickets,
         "status": "awaiting_approval" if complexity != "simple" else "building",
     }
@@ -481,13 +499,27 @@ async def _run_coder_for_ticket(ticket: dict, state: dict, system_prompt: str, t
         return {"coder": {"status": "failed", "error": response}, "reviewer": {"status": "pending"}}
 
     json_str = extract_json_block(response)
-    result = {"coder": {"status": "completed", "raw_response": response[:500]}, "reviewer": {"status": "pending"}}
     if json_str:
         try:
             parsed = TicketResult(**json.loads(json_str))
-            result["coder"] = parsed.model_dump()
+            result = {"coder": parsed.model_dump(), "reviewer": {"status": "pending"}}
+            return result
         except Exception:
             pass
+
+    # JSON parse failed — check if agent actually committed anything
+    git_check = subprocess.run(
+        ["git", "log", "--oneline", "-1", "--since=5 minutes ago"],
+        cwd=target_dir, capture_output=True, text=True,
+    )
+    has_recent_commit = bool(git_check.stdout.strip())
+
+    if has_recent_commit:
+        # Agent committed code but didn't return JSON — mark completed, reviewer will check
+        result = {"coder": {"status": "completed", "raw_response": response[:500], "note": "No structured output — review carefully"}, "reviewer": {"status": "pending"}}
+    else:
+        # No JSON and no commit — agent failed to produce anything useful
+        result = {"coder": {"status": "failed", "raw_response": response[:500], "error": "No code committed and no structured output"}, "reviewer": {"status": "pending"}}
 
     return result
 
@@ -748,16 +780,18 @@ async def reviewer_node(state: dict) -> dict:
                 continue
 
             json_str = extract_json_block(response)
-            review_data = {"status": "pass", "verdict": "pass", "cycle": review_cycles[tid]}
+            # Default to FAIL — safer than passing bad code through
+            review_data = {"status": "fail", "verdict": "fail", "cycle": review_cycles[tid], "note": "Could not parse review output — defaulting to fail"}
             if json_str:
                 try:
                     parsed = ReviewResult(**json.loads(json_str))
                     review_data = parsed.model_dump()
                 except Exception:
                     upper = response.upper()
-                    if "FAIL" in upper[:100]:
-                        review_data["verdict"] = "fail"
-                        review_data["status"] = "fail"
+                    if "PASS" in upper[:100] and "FAIL" not in upper[:100]:
+                        review_data["verdict"] = "pass"
+                        review_data["status"] = "pass"
+                        review_data["note"] = "Parsed verdict from text (no structured JSON)"
 
             new_results[tid] = {**result, "reviewer": review_data}
 
