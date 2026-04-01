@@ -9,6 +9,7 @@ from db.models import Workflow, WorkflowExecution, new_id, utcnow
 from graphs.sandbox import build_sandbox_graph, SandboxState
 from services.event_bus import event_bus
 from services.goose_manager import goose_manager
+from services.checkpointer import get_checkpointer
 
 router = APIRouter(prefix="/api/workflows", tags=["workflows"])
 
@@ -204,7 +205,8 @@ async def _run_workflow(execution_id: str, workflow_id: str, nodes: list, edges:
             print(f"[workflow:{execution_id}] No graph built (no valid nodes)")
             return
 
-        compiled = graph.compile()
+        checkpointer = await get_checkpointer()
+        compiled = graph.compile(checkpointer=checkpointer)
 
         initial_state: SandboxState = {
             "workflow_id": workflow_id,
@@ -217,7 +219,10 @@ async def _run_workflow(execution_id: str, workflow_id: str, nodes: list, edges:
         }
 
         print(f"[workflow:{execution_id}] Starting execution with {len(nodes)} nodes, cwd={cwd}")
-        result = await compiled.ainvoke(initial_state)
+        result = await compiled.ainvoke(
+            initial_state,
+            config={"configurable": {"thread_id": execution_id}},
+        )
 
         execution = db.query(WorkflowExecution).filter(WorkflowExecution.id == execution_id).first()
         if execution:

@@ -178,6 +178,10 @@ def _make_agent_node(
     cwd: str | None = None, project_context: str = "",
 ):
     """Create an async node function that runs an agent."""
+    max_retries = 2
+    backoff_delays = [5, 15]
+    node_timeout = node_data.get("timeout", 300)
+
     async def node_func(state: SandboxState) -> dict:
         db = SessionLocal()
         try:
@@ -273,18 +277,117 @@ def _make_agent_node(
                     })
                     db.commit()
 
-            # Run agent
+            # Run agent with retry logic (follows run_goose_agent pattern from nodes.py)
+            last_error = None
             response_text = ""
-            async for chunk in send_through_pipeline(
-                agent_id=agent.id,
-                message=input_text,
-                db=db,
-                agent_data=agent_dict,
-                cwd=work_dir,
-                execution_id=execution_id,
-            ):
-                if chunk.type == "text":
-                    response_text += chunk.content
+
+            for attempt in range(1 + max_retries):
+                if attempt > 0:
+                    delay = backoff_delays[min(attempt - 1, len(backoff_delays) - 1)]
+                    print(f"[sandbox:{node_id}] Retry {attempt}/{max_retries} after {delay}s")
+                    await asyncio.sleep(delay)
+
+                response_text = ""
+                is_transient_failure = False
+
+                try:
+                    async for chunk in send_through_pipeline(
+                        agent_id=agent.id,
+                        message=input_text,
+                        db=db,
+                        agent_data=agent_dict,
+                        cwd=work_dir,
+                        execution_id=execution_id,
+                        target_dir=work_dir,
+                        timeout=node_timeout,
+                    ):
+                        if chunk.type == "text":
+                            if chunk.content.startswith("SANDBOX_VIOLATION:"):
+                                # Sandbox violation is not retryable
+                                error_msg = f"AGENT_ERROR: {chunk.content}"
+                                print(f"[sandbox:{node_id}] Sandbox violation: {chunk.content}")
+                                if execution_id:
+                                    exc = db.query(WorkflowExecution).filter(
+                                        WorkflowExecution.id == execution_id
+                                    ).first()
+                                    if exc:
+                                        exc.context = json.dumps({
+                                            "nodeResults": state.get("node_results", {}),
+                                            "currentNode": node_id,
+                                            "status": "failed",
+                                            "error": error_msg,
+                                        })
+                                        db.commit()
+                                await event_bus.emit("workflow:node_error", {
+                                    "execution_id": execution_id,
+                                    "node_id": node_id,
+                                    "error": error_msg,
+                                })
+                                new_results = {**state.get("node_results", {}), node_id: error_msg}
+                                return {"node_results": new_results, "current_node": node_id, "status": "running", "error": error_msg}
+
+                            if chunk.content.startswith("Error:"):
+                                is_transient_failure = True
+                                last_error = chunk.content
+                                break
+
+                            response_text += chunk.content
+
+                    if not is_transient_failure:
+                        break  # Success — exit retry loop
+
+                except Exception as e:
+                    is_transient_failure = True
+                    last_error = str(e)
+                    print(f"[sandbox:{node_id}] Exception on attempt {attempt + 1}: {e}")
+
+            # Check if all retries exhausted
+            if is_transient_failure:
+                error_msg = f"AGENT_ERROR: {last_error}"
+                print(f"[sandbox:{node_id}] Failed after {max_retries + 1} attempts: {last_error}")
+                if execution_id:
+                    exc = db.query(WorkflowExecution).filter(
+                        WorkflowExecution.id == execution_id
+                    ).first()
+                    if exc:
+                        exc.context = json.dumps({
+                            "nodeResults": state.get("node_results", {}),
+                            "currentNode": node_id,
+                            "status": "failed",
+                            "error": error_msg,
+                        })
+                        db.commit()
+                await event_bus.emit("workflow:node_error", {
+                    "execution_id": execution_id,
+                    "node_id": node_id,
+                    "error": error_msg,
+                })
+                new_results = {**state.get("node_results", {}), node_id: error_msg}
+                return {"node_results": new_results, "current_node": node_id, "status": "running", "error": error_msg}
+
+            # Check for AGENT_ERROR in response
+            if response_text.startswith("AGENT_ERROR:"):
+                error_msg = response_text
+                print(f"[sandbox:{node_id}] Agent error: {error_msg}")
+                if execution_id:
+                    exc = db.query(WorkflowExecution).filter(
+                        WorkflowExecution.id == execution_id
+                    ).first()
+                    if exc:
+                        exc.context = json.dumps({
+                            "nodeResults": state.get("node_results", {}),
+                            "currentNode": node_id,
+                            "status": "failed",
+                            "error": error_msg,
+                        })
+                        db.commit()
+                await event_bus.emit("workflow:node_error", {
+                    "execution_id": execution_id,
+                    "node_id": node_id,
+                    "error": error_msg,
+                })
+                new_results = {**state.get("node_results", {}), node_id: error_msg}
+                return {"node_results": new_results, "current_node": node_id, "status": "running", "error": error_msg}
 
             # Fallback: write .md from response if agent didn't
             if not os.path.exists(output_md_path) and response_text.strip():

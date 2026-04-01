@@ -18,6 +18,8 @@ async def send_through_pipeline(
     cwd: Optional[str] = None,
     max_turns: int = 15,
     execution_id: Optional[str] = None,
+    target_dir: Optional[str] = None,
+    timeout: int = 300,
 ) -> AsyncGenerator[StreamChunk, None]:
     guardrails = parse_guardrails(agent_data.get("guardrails", "{}"))
     if not check_rate_limit(db, agent_id, guardrails.get("rate_limit", 60)):
@@ -51,6 +53,8 @@ async def send_through_pipeline(
         cwd=cwd,
         max_turns=max_turns,
         execution_id=execution_id,
+        target_dir=target_dir,
+        timeout=timeout,
     ):
         if chunk.type == "text":
             total_text += chunk.content
