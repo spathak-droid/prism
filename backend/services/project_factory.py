@@ -220,6 +220,26 @@ async def _run_factory_pipeline(project_id: str, brief: str, target_dir: str, co
         config = {"configurable": {"thread_id": thread_id}}
         result = await graph.ainvoke(initial_state, config)
 
+        # Null plan guard: abort if planner produced nothing actionable
+        if result.get("plan") is None or result.get("tickets") == []:
+            print(f"[project_factory] Null plan guard: planner produced no actionable plan for {project_id}")
+            db = SessionLocal()
+            try:
+                project = db.query(Project).filter(Project.id == project_id).first()
+                if project:
+                    project.status = "failed"
+                    project.updated_at = utcnow()
+                    db.commit()
+            finally:
+                db.close()
+            await event_bus.emit("project:update", {
+                "project_id": project_id,
+                "phase": "planner",
+                "status": "failed",
+                "error": "Planner produced no actionable plan",
+            })
+            return
+
         final_status = "completed" if result.get("status") != "failed" else "failed"
         print(f"[project_factory] Pipeline finished for {project_id}: {final_status}")
 

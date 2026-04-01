@@ -1,3 +1,4 @@
+import asyncio
 import os
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
@@ -37,7 +38,15 @@ async def lifespan(app: FastAPI):
     if tg_token:
         await telegram_bot.start(tg_token)
         print('[prism] Telegram bot started')
+    from services.health_monitor import run_health_monitor
+    health_task = asyncio.create_task(run_health_monitor())
+    print('[prism] Health monitor started')
     yield
+    health_task.cancel()
+    try:
+        await health_task
+    except asyncio.CancelledError:
+        pass
     await telegram_bot.stop()
     agent_scheduler.stop()
     from services.goose_manager import goose_manager

@@ -2,6 +2,7 @@
 import asyncio
 import json
 import re
+import subprocess
 from typing import Any, Optional
 from services.goose_manager import goose_manager, StreamChunk
 from services.event_bus import event_bus
@@ -291,6 +292,18 @@ async def planner_node(state: dict) -> dict:
         model=agent_cfg["model"],
     )
 
+    if response.startswith("AGENT_ERROR:"):
+        update_phase(target_dir, "planner", {"status": "failed", "completed_at": utcnow()})
+        await event_bus.emit("project:update", {
+            "project_id": state["project_id"], "phase": "planner", "status": "failed",
+        })
+        return {
+            "plan": None,
+            "tickets": [],
+            "status": "failed",
+            "error": response,
+        }
+
     json_str = extract_json_block(response)
     plan = None
     tickets = []
@@ -356,11 +369,39 @@ async def coder_node(state: dict) -> dict:
         if all(d in completed_ids for d in deps):
             independent.append(t)
 
+    # Circuit breaker: track consecutive failures
+    consecutive_failures = 0
+    pipeline_paused = False
+
     if complexity == "simple" or len(independent) <= 1:
         for ticket in independent:
             result = await _run_coder_for_ticket(ticket, state, system_prompt, target_dir, review_cycles)
             tid = ticket["id"] if isinstance(ticket, dict) else ticket.id
             new_results[tid] = result
+
+            # Circuit breaker check
+            if isinstance(result, dict) and result.get("coder", {}).get("status") == "failed":
+                consecutive_failures += 1
+            else:
+                consecutive_failures = 0
+
+            if consecutive_failures >= 3:
+                print(f"[coder_node] Circuit breaker: {consecutive_failures} consecutive failures, pausing pipeline")
+                db = SessionLocal()
+                try:
+                    from db.models import Project
+                    project = db.query(Project).filter(Project.id == state["project_id"]).first()
+                    if project:
+                        project.status = "paused"
+                        db.commit()
+                finally:
+                    db.close()
+                await event_bus.emit("project:paused", {
+                    "project_id": state["project_id"],
+                    "reason": f"Circuit breaker: {consecutive_failures} consecutive ticket failures",
+                })
+                pipeline_paused = True
+                break
     else:
         async def _bounded_run(t):
             async with _GOOSE_SEMAPHORE:
@@ -382,6 +423,9 @@ async def coder_node(state: dict) -> dict:
         "project_id": state["project_id"], "phase": "coder", "status": "completed",
     })
 
+    if pipeline_paused:
+        return {"ticket_results": new_results, "status": "paused"}
+
     return {"ticket_results": new_results, "status": "reviewing"}
 
 
@@ -389,6 +433,9 @@ async def _run_coder_for_ticket(ticket: dict, state: dict, system_prompt: str, t
     """Run Goose for a single ticket."""
     tid = ticket["id"] if isinstance(ticket, dict) else ticket.id
     title = ticket.get("title", tid) if isinstance(ticket, dict) else ticket.title
+
+    # Git checkpoint: tag the current state before running coder
+    subprocess.run(["git", "tag", "-f", f"pre-{tid}"], cwd=target_dir, capture_output=True)
 
     feedback_context = ""
     existing = state.get("ticket_results", {}).get(tid, {})
@@ -420,6 +467,11 @@ async def _run_coder_for_ticket(ticket: dict, state: dict, system_prompt: str, t
         provider=agent_cfg["provider"],
         model=agent_cfg["model"],
     )
+
+    # Rollback on agent error
+    if response.startswith("AGENT_ERROR"):
+        subprocess.run(["git", "reset", "--hard", f"pre-{tid}"], cwd=target_dir, capture_output=True)
+        return {"coder": {"status": "failed", "error": response}, "reviewer": {"status": "pending"}}
 
     json_str = extract_json_block(response)
     result = {"coder": {"status": "completed", "raw_response": response[:500]}, "reviewer": {"status": "pending"}}
@@ -482,6 +534,11 @@ async def reviewer_node(state: dict) -> dict:
                 provider=agent_cfg["provider"],
                 model=agent_cfg["model"],
             )
+
+            if response.startswith("AGENT_ERROR:"):
+                review_data = {"status": "fail", "verdict": "fail", "cycle": review_cycles[tid], "error": response}
+                new_results[tid] = {**result, "reviewer": review_data}
+                continue
 
             json_str = extract_json_block(response)
             review_data = {"status": "pass", "verdict": "pass", "cycle": review_cycles[tid]}
@@ -655,12 +712,16 @@ async def approval_gate_node(state: dict) -> dict:
 
 def check_review_outcome(state: dict) -> str:
     """Router: check if all tickets passed review, or if more tickets need processing."""
+    from db.models import ApprovalGate, new_id
+
     tickets = state.get("tickets", [])
     ticket_results = state.get("ticket_results", {})
     review_cycles = state.get("review_cycles", {})
+    target_dir = state.get("target_dir", "")
 
     any_fail = False
     any_escalate = False
+    escalated_tickets = []
 
     for tid, result in ticket_results.items():
         if not isinstance(result, dict):
@@ -670,6 +731,9 @@ def check_review_outcome(state: dict) -> str:
             cycle = review_cycles.get(tid, 1)
             if cycle >= 3:
                 any_escalate = True
+                escalated_tickets.append(tid)
+                # Rollback failed ticket to pre-coder state
+                subprocess.run(["git", "reset", "--hard", f"pre-{tid}"], cwd=target_dir, capture_output=True)
             else:
                 any_fail = True
 
@@ -692,6 +756,31 @@ def check_review_outcome(state: dict) -> str:
         return "more_tickets"
 
     if any_escalate:
+        # Create escalation approval gates for failed tickets
+        db = SessionLocal()
+        try:
+            for tid in escalated_tickets:
+                result = ticket_results.get(tid, {})
+                reviewer_data = result.get("reviewer", {})
+                gate = ApprovalGate(
+                    id=new_id(),
+                    project_id=state["project_id"],
+                    node_id=f"escalation_{tid}",
+                    type="ticket_escalation",
+                    status="pending",
+                    payload=json.dumps({
+                        "ticket_id": tid,
+                        "failure_details": reviewer_data.get("issues", []),
+                        "review_cycles": review_cycles.get(tid, 3),
+                        "last_verdict": reviewer_data.get("verdict"),
+                        "review_history": reviewer_data,
+                    }),
+                    created_at=utcnow(),
+                )
+                db.add(gate)
+            db.commit()
+        finally:
+            db.close()
         return "fail_escalate"
     if any_fail:
         for tid, result in ticket_results.items():

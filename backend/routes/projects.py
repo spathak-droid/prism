@@ -13,6 +13,12 @@ from contracts.state import read_state, update_phase
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
 
+@router.get("/health")
+def project_health():
+    from services.health_monitor import get_health_summary
+    return get_health_summary()
+
+
 class CreateProjectRequest(BaseModel):
     name: str
     brief: str

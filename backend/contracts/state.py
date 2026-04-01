@@ -74,3 +74,31 @@ def update_phase(target_dir: str, phase: str, updates: dict[str, Any]):
                     state["pipeline"]["current_phase"] = p
                     break
     write_state(target_dir, state)
+
+
+def sync_state_to_db(target_dir: str, project_id: str, db) -> None:
+    """Sync .factory/state.json to the Project record in DB.
+
+    Reads the local state file and updates the Project's status and
+    current phase to match, ensuring DB and filesystem stay consistent.
+    Called after each node completion.
+    """
+    from db.models import Project
+
+    state = read_state(target_dir)
+    if not state:
+        return
+
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        return
+
+    # Sync status from state file
+    file_status = state.get("status")
+    if file_status:
+        project.status = file_status
+
+    # Sync updated_at
+    project.updated_at = state.get("updated_at", utcnow())
+
+    db.commit()
