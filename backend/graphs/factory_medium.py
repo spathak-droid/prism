@@ -1,10 +1,10 @@
-"""Medium Factory SDLC graph: Researcher → Planner → Approval → Coder(s) → Validator → Reviewer → Deployer"""
+"""Medium Factory SDLC graph: Researcher → Planner → Approval → Coder(s) → Validator → Reviewer → QA → Deployer"""
 from typing import TypedDict, Optional
 from langgraph.graph import StateGraph, END
 from graphs.nodes import (
     researcher_node, planner_node, approval_gate_node,
-    coder_node, validator_node, reviewer_node, deployer_node,
-    check_review_outcome, check_validation_outcome,
+    coder_node, validator_node, reviewer_node, qa_node, deployer_node,
+    check_review_outcome, check_validation_outcome, check_qa_outcome,
 )
 
 
@@ -20,6 +20,7 @@ class MediumProjectState(TypedDict):
     ticket_results: dict
     review_cycles: dict
     validation: Optional[dict]
+    qa_result: Optional[dict]
     deploy_result: Optional[dict]
     status: str
     error: Optional[str]
@@ -34,6 +35,7 @@ def build_medium_graph():
     graph.add_node("coder", coder_node)
     graph.add_node("validator", validator_node)
     graph.add_node("reviewer", reviewer_node)
+    graph.add_node("qa", qa_node)
     graph.add_node("deployer", deployer_node)
 
     graph.set_entry_point("researcher")
@@ -48,10 +50,15 @@ def build_medium_graph():
     })
 
     graph.add_conditional_edges("reviewer", check_review_outcome, {
-        "pass": "deployer",
+        "pass": "qa",
         "fail_retry": "coder",
         "fail_escalate": END,
         "more_tickets": "coder",
+    })
+
+    graph.add_conditional_edges("qa", check_qa_outcome, {
+        "pass": "deployer",
+        "fail": END,
     })
 
     graph.add_edge("deployer", END)
@@ -73,6 +80,7 @@ def build_post_approval_graph():
     graph.add_node("coder", coder_node)
     graph.add_node("validator", validator_node)
     graph.add_node("reviewer", reviewer_node)
+    graph.add_node("qa", qa_node)
     graph.add_node("deployer", deployer_node)
 
     graph.set_entry_point("coder")
@@ -84,10 +92,15 @@ def build_post_approval_graph():
     })
 
     graph.add_conditional_edges("reviewer", check_review_outcome, {
-        "pass": "deployer",
+        "pass": "qa",
         "fail_retry": "coder",
         "fail_escalate": END,
         "more_tickets": "coder",
+    })
+
+    graph.add_conditional_edges("qa", check_qa_outcome, {
+        "pass": "deployer",
+        "fail": END,
     })
 
     graph.add_edge("deployer", END)

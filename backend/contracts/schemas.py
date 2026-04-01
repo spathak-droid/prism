@@ -114,6 +114,21 @@ class DeployResult(BaseModel):
     notes: str = ""
 
 
+# --- QA Agent ---
+
+class QATestResult(BaseModel):
+    acceptance_criterion: str
+    status: str  # pass, fail, skip
+    evidence: str
+
+class QAResult(BaseModel):
+    type: Literal["qa_result"] = "qa_result"
+    status: str  # pass, fail
+    server_started: bool
+    tests: list[QATestResult]
+    summary: str
+
+
 # --- Complexity assessment ---
 
 def assess_complexity(brief: str) -> str:

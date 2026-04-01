@@ -9,7 +9,7 @@ from contracts.schemas import assess_complexity
 from contracts.state import init_state, read_state, write_state
 from services.event_bus import event_bus
 
-VALID_STAGES = ["researcher", "planner", "approval", "coder", "reviewer", "deployer"]
+VALID_STAGES = ["researcher", "planner", "approval", "coder", "reviewer", "qa", "deployer"]
 REQUIRED_STAGES = {"planner", "coder"}
 STAGE_AGENT_MAP = {
     "researcher": ("Researcher", "researcher"),
@@ -17,6 +17,7 @@ STAGE_AGENT_MAP = {
     "approval": None,
     "coder": ("Builder", "coder"),
     "reviewer": ("Reviewer", "reviewer"),
+    "qa": ("QA", "qa"),
     "deployer": ("Deployer", "deployer"),
 }
 
@@ -203,6 +204,7 @@ async def _run_factory_pipeline(project_id: str, brief: str, target_dir: str, co
             "ticket_results": {},
             "review_cycles": {},
             "validation": None,
+            "qa_result": None,
             "status": "planning",
             "error": None,
         }
@@ -315,6 +317,7 @@ async def resume_after_approval(project_id: str, target_dir: str, complexity: st
             "ticket_results": {},
             "review_cycles": {},
             "validation": None,
+            "qa_result": None,
             "status": "building",
             "error": None,
         }

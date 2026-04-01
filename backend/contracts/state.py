@@ -49,6 +49,7 @@ def init_state(project_id: str, brief: str, target_dir: str, complexity: str) ->
                 "coder": {"status": "pending"},
                 "validator": {"status": "pending"},
                 "reviewer": {"status": "pending"},
+                "qa": {"status": "pending"},
                 "deployer": {"status": "pending" if complexity == "complex" else "skipped", "reason": None if complexity == "complex" else "not complex"},
             },
         },
@@ -68,7 +69,7 @@ def update_phase(target_dir: str, phase: str, updates: dict[str, Any]):
     state["pipeline"]["phases"][phase].update(updates)
     if "status" in updates:
         # Advance current_phase to next pending
-        phase_order = ["researcher", "planner", "approval", "coder", "validator", "reviewer", "deployer"]
+        phase_order = ["researcher", "planner", "approval", "coder", "validator", "reviewer", "qa", "deployer"]
         if updates["status"] == "completed":
             for p in phase_order:
                 if state["pipeline"]["phases"][p]["status"] == "pending":

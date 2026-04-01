@@ -7,7 +7,7 @@ from typing import Any, Optional
 from services.goose_manager import goose_manager, StreamChunk
 from services.event_bus import event_bus
 from contracts.state import update_phase, read_state, write_state
-from contracts.schemas import PlanOutput, TicketResult, ReviewResult
+from contracts.schemas import PlanOutput, TicketResult, ReviewResult, QAResult
 from datetime import datetime, timezone
 from db.database import SessionLocal
 from services.skill_loader import build_prompt_with_skills
@@ -995,3 +995,91 @@ def check_review_outcome(state: dict) -> str:
                 result["reviewer"]["status"] = "pending"
         return "fail_retry"
     return "pass"
+
+
+async def qa_node(state: dict) -> dict:
+    """LangGraph node: QA agent. Starts the app and runs integration tests."""
+    from prompts.qa import get_system_prompt
+
+    target_dir = state["target_dir"]
+    tickets = state.get("tickets", [])
+
+    update_phase(target_dir, "qa", {"status": "in_progress", "started_at": utcnow()})
+    await event_bus.emit("project:update", {
+        "project_id": state["project_id"], "phase": "qa", "status": "in_progress",
+    })
+
+    system_prompt = get_system_prompt(target_dir)
+
+    # Collect all acceptance criteria from all tickets
+    all_acs = []
+    for ticket in tickets:
+        tid = ticket["id"] if isinstance(ticket, dict) else ticket.id
+        title = ticket.get("title", tid) if isinstance(ticket, dict) else ticket.title
+        acs = ticket.get("acceptance_criteria", []) if isinstance(ticket, dict) else ticket.acceptance_criteria
+        for ac in acs:
+            all_acs.append(f"[{tid}] {ac}")
+
+    ac_block = "\n".join(f"  - {ac}" for ac in all_acs)
+
+    message = (
+        f"Target directory: {target_dir}\n\n"
+        f"Run QA integration tests against this project.\n"
+        f"All acceptance criteria to verify:\n{ac_block}\n\n"
+        f"Read CLAUDE.md for the start command, start the app, test each AC with curl, "
+        f"then kill the server and return a QA result JSON block."
+    )
+
+    agent_cfg = get_project_agent_config(state["project_id"], "qa")
+    response = await run_goose_agent(
+        agent_id=agent_cfg["agent_id"],
+        agent_name="QA",
+        system_prompt=system_prompt,
+        message=message,
+        target_dir=target_dir,
+        provider=agent_cfg["provider"],
+        model=agent_cfg["model"],
+        max_turns=20,
+        timeout=180,
+    )
+
+    if response.startswith("AGENT_ERROR:"):
+        update_phase(target_dir, "qa", {"status": "failed", "completed_at": utcnow()})
+        await event_bus.emit("project:update", {
+            "project_id": state["project_id"], "phase": "qa", "status": "failed",
+        })
+        return {
+            "qa_result": {"status": "fail", "server_started": False, "tests": [], "summary": response},
+            "status": "qa_failed",
+        }
+
+    json_str = extract_json_block(response)
+    qa_result = None
+    if json_str:
+        try:
+            qa_data = json.loads(json_str)
+            qa_result = QAResult(**qa_data)
+        except Exception as e:
+            print(f"[qa_node] Failed to parse QAResult: {e}")
+
+    update_phase(target_dir, "qa", {"status": "completed", "completed_at": utcnow()})
+    await event_bus.emit("project:update", {
+        "project_id": state["project_id"], "phase": "qa", "status": "completed",
+    })
+
+    if qa_result:
+        result_dict = qa_result.model_dump()
+        status = "completed" if qa_result.status == "pass" else "qa_failed"
+    else:
+        result_dict = {"status": "fail", "server_started": False, "tests": [], "summary": "Could not parse QA result"}
+        status = "qa_failed"
+
+    return {"qa_result": result_dict, "status": status}
+
+
+def check_qa_outcome(state: dict) -> str:
+    """Router: check if QA passed or failed."""
+    qa_result = state.get("qa_result", {})
+    if isinstance(qa_result, dict) and qa_result.get("status") == "pass":
+        return "pass"
+    return "fail"
