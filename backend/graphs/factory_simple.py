@@ -1,7 +1,7 @@
-"""Simple Factory SDLC graph: Planner → Coder → Reviewer → END"""
+"""Simple Factory SDLC graph: Planner → Coder → Validator → Reviewer → END"""
 from typing import TypedDict, Optional, Annotated
 from langgraph.graph import StateGraph, END
-from graphs.nodes import planner_node, coder_node, reviewer_node, check_review_outcome
+from graphs.nodes import planner_node, coder_node, validator_node, reviewer_node, check_review_outcome, check_validation_outcome
 
 
 class SimpleProjectState(TypedDict):
@@ -15,6 +15,7 @@ class SimpleProjectState(TypedDict):
     tickets: list
     ticket_results: dict
     review_cycles: dict
+    validation: Optional[dict]
     status: str
     error: Optional[str]
 
@@ -25,11 +26,17 @@ def build_simple_graph():
 
     graph.add_node("planner", planner_node)
     graph.add_node("coder", coder_node)
+    graph.add_node("validator", validator_node)
     graph.add_node("reviewer", reviewer_node)
 
     graph.set_entry_point("planner")
     graph.add_edge("planner", "coder")
-    graph.add_edge("coder", "reviewer")
+    graph.add_edge("coder", "validator")
+
+    graph.add_conditional_edges("validator", check_validation_outcome, {
+        "pass": "reviewer",
+        "fail": "coder",
+    })
 
     graph.add_conditional_edges("reviewer", check_review_outcome, {
         "pass": END,

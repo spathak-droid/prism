@@ -202,6 +202,7 @@ async def _run_factory_pipeline(project_id: str, brief: str, target_dir: str, co
             "tickets": [],
             "ticket_results": {},
             "review_cycles": {},
+            "validation": None,
             "status": "planning",
             "error": None,
         }
@@ -313,6 +314,7 @@ async def resume_after_approval(project_id: str, target_dir: str, complexity: st
             "tickets": plan.get("tickets", []) if isinstance(plan, dict) else [],
             "ticket_results": {},
             "review_cycles": {},
+            "validation": None,
             "status": "building",
             "error": None,
         }

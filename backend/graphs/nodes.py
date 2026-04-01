@@ -212,8 +212,15 @@ async def run_goose_agent(
                 cwd=target_dir,
                 max_turns=max_turns,
                 timeout=timeout,
+                target_dir=target_dir,
             ):
                 if chunk.type == "text":
+                    if chunk.content.startswith("SANDBOX_VIOLATION:"):
+                        violation_detail = chunk.content
+                        _save_log_entry(agent_id, "sandbox_violation", violation_detail)
+                        print(f"[run_goose_agent] {agent_name} sandbox violation: {violation_detail}")
+                        _set_agent_db_status(agent_id, "error")
+                        return f"AGENT_ERROR: {violation_detail}"
                     if chunk.content.startswith("Error: Agent timed out") or chunk.content.startswith("Error:"):
                         is_transient_failure = True
                         last_error = chunk.content
@@ -483,6 +490,206 @@ async def _run_coder_for_ticket(ticket: dict, state: dict, system_prompt: str, t
             pass
 
     return result
+
+
+async def validator_node(state: dict) -> dict:
+    """LangGraph node: Hard validation via subprocess commands (no AI).
+
+    Reads CLAUDE.md for commands, falls back to common defaults,
+    and runs them via asyncio.create_subprocess_exec with 60s timeout.
+    """
+    import os
+
+    target_dir = state["target_dir"]
+
+    update_phase(target_dir, "validator", {"status": "in_progress", "started_at": utcnow()})
+    await event_bus.emit("project:update", {
+        "project_id": state["project_id"], "phase": "validator", "status": "in_progress",
+    })
+
+    commands = _parse_claude_md_commands(target_dir)
+    if not commands:
+        commands = _discover_default_commands(target_dir)
+
+    results = []
+    all_passed = True
+
+    for cmd in commands:
+        cmd_result = await _run_validation_command(cmd, target_dir)
+        results.append(cmd_result)
+        if not cmd_result["passed"]:
+            all_passed = False
+
+    passed_count = sum(1 for r in results if r["passed"])
+    total_count = len(results)
+    failed_names = [r["command"] for r in results if not r["passed"]]
+
+    if all_passed:
+        summary = f"{passed_count}/{total_count} checks passed"
+    else:
+        summary = f"{len(failed_names)}/{total_count} checks failed: {', '.join(failed_names)}"
+
+    status = "pass" if all_passed else "fail"
+
+    validation = {
+        "status": status,
+        "results": results,
+        "summary": summary,
+    }
+
+    update_phase(target_dir, "validator", {"status": "completed", "completed_at": utcnow()})
+    await event_bus.emit("project:update", {
+        "project_id": state["project_id"], "phase": "validator", "status": "completed",
+    })
+
+    return {"validation": validation}
+
+
+def _parse_claude_md_commands(target_dir: str) -> list[list[str]]:
+    """Parse CLAUDE.md for a Commands section and extract shell commands."""
+    import os
+
+    claude_md_path = os.path.join(target_dir, "CLAUDE.md")
+    if not os.path.exists(claude_md_path):
+        return []
+
+    try:
+        with open(claude_md_path, "r") as f:
+            content = f.read()
+    except Exception:
+        return []
+
+    # Find the Commands section (## Commands or # Commands)
+    commands_match = re.search(r'(?:^|\n)#{1,3}\s*Commands?\s*\n', content)
+    if not commands_match:
+        return []
+
+    # Extract the section content until the next heading or end of file
+    section_start = commands_match.end()
+    next_heading = re.search(r'\n#{1,3}\s', content[section_start:])
+    if next_heading:
+        section_content = content[section_start:section_start + next_heading.start()]
+    else:
+        section_content = content[section_start:]
+
+    # Extract commands from code blocks or backtick-enclosed commands
+    commands = []
+    # Match ```bash ... ``` or ``` ... ``` blocks
+    code_blocks = re.findall(r'```(?:bash|sh)?\s*\n(.*?)\n\s*```', section_content, re.DOTALL)
+    for block in code_blocks:
+        for line in block.strip().split('\n'):
+            line = line.strip()
+            # Skip comments and empty lines
+            if line and not line.startswith('#') and not line.startswith('//'):
+                commands.append(line.split())
+
+    # Also match inline backtick commands if no code blocks found
+    if not commands:
+        inline_cmds = re.findall(r'`([^`]+)`', section_content)
+        for cmd in inline_cmds:
+            cmd = cmd.strip()
+            if cmd and not cmd.startswith('#'):
+                commands.append(cmd.split())
+
+    return commands
+
+
+def _discover_default_commands(target_dir: str) -> list[list[str]]:
+    """Discover default validation commands based on project type."""
+    import os
+
+    commands = []
+
+    has_package_json = os.path.exists(os.path.join(target_dir, "package.json"))
+    has_requirements = os.path.exists(os.path.join(target_dir, "requirements.txt"))
+    has_tests_dir = os.path.exists(os.path.join(target_dir, "tests"))
+
+    if has_package_json:
+        # Check package.json for available scripts
+        try:
+            with open(os.path.join(target_dir, "package.json"), "r") as f:
+                pkg = json.load(f)
+            scripts = pkg.get("scripts", {})
+            if "test" in scripts:
+                commands.append(["npm", "test"])
+            if "lint" in scripts:
+                commands.append(["npm", "run", "lint"])
+            if "build" in scripts:
+                commands.append(["npm", "run", "build"])
+        except Exception:
+            commands.append(["npm", "test"])
+    elif has_requirements or has_tests_dir:
+        commands.append(["python", "-m", "pytest"])
+    else:
+        # Simple HTML/CSS/JS project — check for valid HTML file
+        html_files = [f for f in os.listdir(target_dir) if f.endswith('.html')]
+        if html_files:
+            # Use the first HTML file found (prefer index.html)
+            target_html = "index.html" if "index.html" in html_files else html_files[0]
+            abs_html_path = os.path.join(target_dir, target_html)
+            commands.append(["python3", "-c",
+                "import sys; "
+                "content = open(sys.argv[1]).read(); "
+                "sys.exit(0 if 'DOCTYPE' in content.upper() else 1)",
+                abs_html_path,
+            ])
+
+    return commands
+
+
+async def _run_validation_command(cmd: list[str], target_dir: str) -> dict:
+    """Run a single validation command with 60s timeout."""
+    cmd_str = " ".join(cmd)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd=target_dir,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=60)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return {
+                "command": cmd_str,
+                "exit_code": -1,
+                "passed": False,
+                "output": "Command timed out after 60 seconds",
+            }
+
+        stdout_str = stdout_bytes.decode("utf-8", errors="replace")[-500:]
+        stderr_str = stderr_bytes.decode("utf-8", errors="replace")[-500:]
+        exit_code = proc.returncode
+
+        return {
+            "command": cmd_str,
+            "exit_code": exit_code,
+            "passed": exit_code == 0,
+            "output": stdout_str if exit_code == 0 else stderr_str or stdout_str,
+        }
+    except FileNotFoundError:
+        return {
+            "command": cmd_str,
+            "exit_code": -1,
+            "passed": False,
+            "output": f"Command not found: {cmd[0]}",
+        }
+    except Exception as e:
+        return {
+            "command": cmd_str,
+            "exit_code": -1,
+            "passed": False,
+            "output": str(e),
+        }
+
+
+def check_validation_outcome(state: dict) -> str:
+    """Router: check if validation passed or failed."""
+    validation = state.get("validation", {})
+    status = validation.get("status", "fail")
+    return "pass" if status == "pass" else "fail"
 
 
 async def reviewer_node(state: dict) -> dict:

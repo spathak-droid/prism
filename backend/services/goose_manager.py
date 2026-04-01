@@ -7,6 +7,7 @@ import subprocess
 from typing import AsyncGenerator, Optional
 from services.stream_parser import parse_goose_line, StreamChunk
 from services.event_bus import event_bus
+from services.path_guard import check_tool_call
 
 
 def _find_goose() -> str:
@@ -78,6 +79,7 @@ class GooseManager:
         extra_builtins: Optional[list[str]] = None,
         execution_id: Optional[str] = None,
         timeout: int = 300,
+        target_dir: Optional[str] = None,
     ) -> AsyncGenerator[StreamChunk, None]:
         """Spawn a fresh Goose session and yield StreamChunks."""
         agent = self._agents.get(agent_id)
@@ -176,6 +178,24 @@ class GooseManager:
                             if execution_id:
                                 tool_evt["execution_id"] = execution_id
                             await event_bus.emit("agent:tool", tool_evt)
+
+                        # Path guard: check tool_request chunks for sandbox violations
+                        if target_dir and chunk.type == "tool_request":
+                            is_safe, violation = check_tool_call(chunk, target_dir)
+                            if not is_safe:
+                                print(f"[GooseManager] SANDBOX VIOLATION by {agent_id}: {violation}")
+                                if process and process.returncode is None:
+                                    process.kill()
+                                    try:
+                                        await asyncio.wait_for(process.wait(), timeout=5)
+                                    except asyncio.TimeoutError:
+                                        pass
+                                yield StreamChunk(
+                                    type="text",
+                                    content=f"SANDBOX_VIOLATION: {violation}",
+                                )
+                                return
+
                         yield chunk
 
             # Flush remaining buffer after stdout closes
