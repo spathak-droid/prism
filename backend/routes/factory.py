@@ -42,15 +42,23 @@ MEDIUM_EDGES = [
 
 
 def _find_agent_for_role(db: Session, role: str) -> Optional[str]:
-    """Find a standalone agent matching this role, or create one from template."""
+    """Find a standalone agent matching this role, or create one from template.
+
+    Prefers agents without parentheses in the name (standalone agents like "Planner")
+    over project-specific agents like "Planner (FRUITNINJA)".
+    """
     # Map factory roles to DB roles
     role_map = {"coder": ["coder", "developer"], "reviewer": ["reviewer", "code-reviewer"]}
     search_roles = role_map.get(role, [role])
 
     for r in search_roles:
-        agent = db.query(Agent).filter(Agent.role == r).first()
-        if agent:
-            return agent.id
+        # Prefer standalone agents (no project suffix in name)
+        agents = db.query(Agent).filter(Agent.role == r).all()
+        standalone = [a for a in agents if "(" not in a.name]
+        if standalone:
+            return standalone[0].id
+        if agents:
+            return agents[0].id
 
     # No agent found — create from template
     for r in search_roles:
