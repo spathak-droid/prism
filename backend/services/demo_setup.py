@@ -277,11 +277,26 @@ AGENT_TEMPLATES = [
 ]
 
 
+def _load_role_prompt_for_seed(role: str) -> str:
+    """Load the .md prompt for a role to seed into DB. Returns generic fallback if no .md exists."""
+    import os
+    prompts_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "prompts")
+    md_path = os.path.join(prompts_dir, f"{role}.md")
+    if os.path.exists(md_path):
+        with open(md_path, "r") as f:
+            return f.read()
+    return None
+
+
 def setup_demo(db: Session) -> dict:
     now = utcnow()
     seed_skills(db)
 
     for tmpl in AGENT_TEMPLATES:
+        # Load prompt from .md file if available, otherwise use generic default
+        md_prompt = _load_role_prompt_for_seed(tmpl["role"])
+        default_prompt = md_prompt or f"You are the {tmpl['name']} agent."
+
         existing = db.query(AgentTemplate).filter(AgentTemplate.name == tmpl["name"]).first()
         if existing:
             existing.model = tmpl.get("model", "claude-opus-4-20250514")
@@ -290,11 +305,14 @@ def setup_demo(db: Session) -> dict:
             existing.tools = json.dumps(tmpl["tools"])
             existing.extensions = json.dumps(tmpl.get("extensions", []))
             existing.description = tmpl["description"]
+            # Update system_prompt from .md if it still has the old generic default
+            if md_prompt and existing.system_prompt.startswith("You are the "):
+                existing.system_prompt = md_prompt
         else:
             db.add(AgentTemplate(
                 id=new_id(), name=tmpl["name"], role=tmpl["role"],
                 description=tmpl["description"],
-                system_prompt=f"You are the {tmpl['name']} agent.",
+                system_prompt=default_prompt,
                 model=tmpl.get("model", "claude-opus-4-20250514"),
                 provider=tmpl.get("provider", "claude-code"),
                 skills=json.dumps(tmpl["skills"]),

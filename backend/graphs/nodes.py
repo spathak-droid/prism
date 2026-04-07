@@ -105,6 +105,23 @@ def assemble_prompt_with_skills(base_prompt: str, role: str) -> str:
         db.close()
 
 
+def _get_agent_system_prompt(agent_id: str) -> str:
+    """Read the agent's system_prompt from the DB."""
+    from db.models import Agent
+    db = SessionLocal()
+    try:
+        agent = db.query(Agent).filter(Agent.id == agent_id).first()
+        return agent.system_prompt if agent else ""
+    finally:
+        db.close()
+
+
+def _get_complexity_block(complexity: str, role: str) -> str:
+    """Return the complexity-specific instruction block for a role."""
+    from prompts import COMPLEXITY_BLOCKS
+    return COMPLEXITY_BLOCKS.get(complexity, "Full research protocol.")
+
+
 def _set_agent_db_status(agent_id: str, status: str):
     """Update agent status in DB so the UI reflects it."""
     from db.models import Agent
@@ -817,8 +834,8 @@ async def reviewer_node(state: dict) -> dict:
 
 async def researcher_node(state: dict) -> dict:
     """LangGraph node: Researcher agent."""
-    from prompts.researcher import get_system_prompt
     from contracts.schemas import ResearchOutput
+    from prompts import load_role_prompt
 
     target_dir = state["target_dir"]
     complexity = state["complexity"]
@@ -829,7 +846,30 @@ async def researcher_node(state: dict) -> dict:
         "project_id": state["project_id"], "phase": "researcher", "status": "in_progress",
     })
 
-    system_prompt = assemble_prompt_with_skills(get_system_prompt(complexity, target_dir), "researcher")
+    # Load prompt: agent's DB prompt (editable via UI) → .md file fallback → legacy Python fallback
+    agent_cfg = get_project_agent_config(state["project_id"], "researcher")
+    db_prompt = _get_agent_system_prompt(agent_cfg["agent_id"])
+
+    if db_prompt and not db_prompt.startswith("You are the "):
+        # Agent has a custom or seeded prompt in DB — use it, substitute variables
+        base_prompt = (
+            db_prompt
+            .replace("{{target_dir}}", target_dir)
+            .replace("{{complexity}}", complexity)
+            .replace("{{complexity_upper}}", complexity.upper())
+            .replace("{{complexity_block}}", _get_complexity_block(complexity, "researcher"))
+        )
+    else:
+        # Fallback: load from .md file
+        md_prompt = load_role_prompt("researcher", target_dir=target_dir, complexity=complexity)
+        if md_prompt:
+            base_prompt = md_prompt
+        else:
+            # Final fallback: legacy Python prompt
+            from prompts.researcher import get_system_prompt
+            base_prompt = get_system_prompt(complexity, target_dir)
+
+    system_prompt = assemble_prompt_with_skills(base_prompt, "researcher")
 
     message = (
         f"Project brief: {brief}\n"
@@ -838,8 +878,6 @@ async def researcher_node(state: dict) -> dict:
         f"Research the technology landscape for this project. "
         f"Return a ResearchOutput JSON block at the end of your response."
     )
-
-    agent_cfg = get_project_agent_config(state["project_id"], "researcher")
 
     # Retry loop: researcher output MUST parse to ResearchOutput.
     # If the agent runs but produces garbage JSON, we retry with explicit feedback.
