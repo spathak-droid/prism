@@ -6,6 +6,7 @@ import ReactFlow, {
   Background,
   Controls,
   MiniMap,
+  useReactFlow,
   type Node,
   type Edge,
   type NodeTypes,
@@ -24,7 +25,7 @@ import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { ArrowLeft, Play, RefreshCw, Square } from "lucide-react";
+import { ArrowLeft, Play, RefreshCw, Square, Terminal, ChevronDown, ChevronUp, Wrench, MessageSquare, AlertCircle, CheckCircle2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import Link from "next/link";
 
@@ -75,30 +76,20 @@ function WorkflowDetailContent() {
   const [taskInput, setTaskInput] = useState("");
   const [selectedResult, setSelectedResult] = useState<{ label: string; content: string } | null>(null);
   const [dismissedExecutionId, setDismissedExecutionId] = useState<string | null>(null);
+  const [activityLog, setActivityLog] = useState<Array<{ id: number; time: string; type: string; icon: string; content: string }>>([]);
+  const [showLog, setShowLog] = useState(true);
+  const logEndRef = useRef<HTMLDivElement>(null);
+  const logCounterRef = useRef(0);
   const executionRef = useRef<ExecutionData | null>(null);
+  const { fitView } = useReactFlow();
 
   // Keep ref in sync so cleanup can access latest value
   useEffect(() => {
     executionRef.current = execution;
   }, [execution]);
 
-  // Stop execution on unmount (navigate away) to avoid wasting tokens
-  useEffect(() => {
-    return () => {
-      const exec = executionRef.current;
-      if (exec && exec.status === "running") {
-        // Use sendBeacon for reliable delivery during page unload
-        const url = `/api/workflows/executions/${exec.id}/stop`;
-        if (navigator.sendBeacon) {
-          navigator.sendBeacon(url);
-        } else {
-          fetch(url, { method: "POST", keepalive: true });
-        }
-      }
-    };
-  }, []);
-
-  // Also stop on browser tab close / refresh
+  // Workflows keep running on the backend even if you navigate away.
+  // Only stop on explicit tab close / browser exit (not page navigation).
   useEffect(() => {
     const handleBeforeUnload = () => {
       const exec = executionRef.current;
@@ -210,6 +201,119 @@ function WorkflowDetailContent() {
     });
   }, [workflow, execution]);
 
+  // Load past events when viewing a completed/running execution
+  useEffect(() => {
+    if (!execution) return;
+    fetch(`/api/workflows/executions/${execution.id}/events`)
+      .then((r) => r.ok ? r.json() : [])
+      .then((events: Array<Record<string, string>>) => {
+        const entries = events
+          .filter((ev) => ev.type !== "heartbeat")
+          .map((ev) => {
+            const id = ++logCounterRef.current;
+            const time = ev.timestamp ? new Date(ev.timestamp).toLocaleTimeString() : "";
+            let icon = "info";
+            let content = "";
+            if (ev.type === "agent:text") {
+              icon = "message";
+              const meta = (ev.meta || {}) as Record<string, string>;
+              const label = meta.node_label || "";
+              content = `[${label}] ${(ev.content || "").slice(0, 250)}`;
+            } else if (ev.type === "agent:tool") {
+              icon = "tool";
+              const arrow = ev.tool_type === "tool_request" ? "→" : "←";
+              content = `${arrow} ${ev.tool_name || "tool"}: ${(ev.content || "").slice(0, 200)}`;
+            } else if (ev.type === "agent:status") {
+              icon = ev.status === "error" ? "error" : ev.status === "running" ? "status" : "done";
+              content = `Agent ${ev.status || ""}`;
+            } else if (ev.type?.startsWith("workflow:")) {
+              icon = "status";
+              content = ev.type;
+            } else {
+              return null;
+            }
+            return { id, time, type: ev.type, icon, content };
+          })
+          .filter(Boolean) as Array<{ id: number; time: string; type: string; icon: string; content: string }>;
+        if (entries.length > 0) {
+          setActivityLog(entries);
+        }
+      })
+      .catch(() => {});
+  }, [execution?.id]);
+
+  // Subscribe to live SSE events during execution
+  useEffect(() => {
+    if (!execution || execution.status !== "running") return;
+
+    const evtSource = new EventSource("/api/events");
+    evtSource.onmessage = (e) => {
+      try {
+        const event = JSON.parse(e.data);
+        if (event.type === "heartbeat") return;
+        // Only show events for this execution
+        if (event.execution_id && event.execution_id !== execution.id) return;
+
+        const time = new Date().toLocaleTimeString();
+        let icon = "info";
+        let content = "";
+
+        if (event.type === "agent:text") {
+          icon = "message";
+          const label = event.node_label || event.node_id || "";
+          content = `[${label}] ${(event.content || "").slice(0, 250)}`;
+        } else if (event.type === "agent:tool") {
+          icon = "tool";
+          const toolType = event.tool_type === "tool_request" ? "calling" : "result";
+          content = `${toolType === "calling" ? "→" : "←"} ${event.tool_name || "tool"}${event.content ? `: ${event.content.slice(0, 200)}` : ""}`;
+        } else if (event.type === "agent:status") {
+          icon = event.status === "error" ? "error" : event.status === "running" ? "status" : "done";
+          content = `Agent ${event.status}${event.reason ? ` (${event.reason})` : ""}`;
+        } else if (event.type === "agent:message") {
+          icon = "message";
+          content = `${event.direction === "incoming" ? "→" : "←"} ${event.content || ""}`.slice(0, 200);
+        } else if (event.type === "mcp:down") {
+          icon = "error";
+          content = `MCP disconnected: ${event.message || event.url}`;
+        } else if (event.type === "mcp:up") {
+          icon = "done";
+          content = `MCP reconnected: ${event.url}`;
+        } else if (event.type?.startsWith("workflow:")) {
+          icon = "status";
+          content = `${event.type}: ${event.error || event.node_id || ""}`.slice(0, 200);
+        } else {
+          return; // Skip unrecognized events
+        }
+
+        setActivityLog((prev) => {
+          const id = ++logCounterRef.current;
+          const next = [...prev, { id, time, type: event.type, icon, content }];
+          return next.length > 500 ? next.slice(-500) : next;
+        });
+      } catch {
+        // ignore parse errors
+      }
+    };
+
+    return () => evtSource.close();
+  }, [execution?.id, execution?.status]);
+
+  // Auto-scroll log
+  useEffect(() => {
+    logEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [activityLog]);
+
+  // Fit view when nodes are loaded/updated
+  useEffect(() => {
+    if (displayNodes.length > 0) {
+      // Small delay to let ReactFlow measure node dimensions
+      const timer = setTimeout(() => {
+        fitView({ padding: 0.2 });
+      }, 100);
+      return () => clearTimeout(timer);
+    }
+  }, [displayNodes, fitView]);
+
   const handleExecute = useCallback(async () => {
     if (!taskInput.trim()) {
       toast.error("Enter a task description before executing.");
@@ -217,6 +321,8 @@ function WorkflowDetailContent() {
     }
     setExecuting(true);
     setDismissedExecutionId(null);
+    setActivityLog([]);
+    logCounterRef.current = 0;
     try {
       const res = await fetch(`/api/workflows/${workflowId}/execute`, {
         method: "POST",
@@ -348,7 +454,45 @@ function WorkflowDetailContent() {
           </ReactFlow>
           </div>
 
-          {/* Activity log removed — node results are shown in the Execution panel */}
+          {/* Live Activity Log */}
+          {execution && (
+            <div className={`border-t bg-card shrink-0 ${showLog ? "h-52" : "h-9"} transition-all`}>
+              <div
+                className="flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-muted/50 border-b"
+                onClick={() => setShowLog((v) => !v)}
+              >
+                <Terminal className="h-3.5 w-3.5 text-muted-foreground" />
+                <span className="text-xs font-medium">Activity Log</span>
+                <Badge variant="secondary" className="text-[10px] ml-1">{activityLog.length}</Badge>
+                <div className="flex-1" />
+                {showLog ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronUp className="h-3.5 w-3.5 text-muted-foreground" />}
+              </div>
+              {showLog && (
+                <ScrollArea className="h-[calc(100%-2.25rem)]">
+                  <div className="px-3 py-1 space-y-0.5 font-mono">
+                    {activityLog.length === 0 && (
+                      <p className="text-[11px] text-muted-foreground py-2">Waiting for events...</p>
+                    )}
+                    {activityLog.map((entry) => (
+                      <div key={entry.id} className="flex items-start gap-1.5 text-[11px] leading-relaxed">
+                        <span className="text-muted-foreground/60 shrink-0 w-16">{entry.time}</span>
+                        <span className="shrink-0">
+                          {entry.icon === "tool" && <Wrench className="h-3 w-3 text-blue-400 inline" />}
+                          {entry.icon === "message" && <MessageSquare className="h-3 w-3 text-green-400 inline" />}
+                          {entry.icon === "error" && <AlertCircle className="h-3 w-3 text-red-400 inline" />}
+                          {entry.icon === "done" && <CheckCircle2 className="h-3 w-3 text-green-400 inline" />}
+                          {entry.icon === "status" && <RefreshCw className="h-3 w-3 text-yellow-400 inline" />}
+                          {entry.icon === "info" && <Terminal className="h-3 w-3 text-muted-foreground inline" />}
+                        </span>
+                        <span className="text-foreground/80 break-all">{entry.content}</span>
+                      </div>
+                    ))}
+                    <div ref={logEndRef} />
+                  </div>
+                </ScrollArea>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Execution Panel */}
