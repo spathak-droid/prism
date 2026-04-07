@@ -851,21 +851,12 @@ async def researcher_node(state: dict) -> dict:
     db_prompt = _get_agent_system_prompt(agent_cfg["agent_id"])
 
     if db_prompt and not db_prompt.startswith("You are the "):
-        # Agent has a custom or seeded prompt in DB — use it, substitute variables
-        base_prompt = (
-            db_prompt
-            .replace("{{target_dir}}", target_dir)
-            .replace("{{complexity}}", complexity)
-            .replace("{{complexity_upper}}", complexity.upper())
-            .replace("{{complexity_block}}", _get_complexity_block(complexity, "researcher"))
-        )
+        base_prompt = db_prompt
     else:
-        # Fallback: load from .md file
-        md_prompt = load_role_prompt("researcher", target_dir=target_dir, complexity=complexity)
+        md_prompt = load_role_prompt("researcher")
         if md_prompt:
             base_prompt = md_prompt
         else:
-            # Final fallback: legacy Python prompt
             from prompts.researcher import get_system_prompt
             base_prompt = get_system_prompt(complexity, target_dir)
 

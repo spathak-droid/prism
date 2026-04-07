@@ -258,38 +258,44 @@ def _make_agent_node(
 
             input_text = "\n\n".join(parts) if parts else "Hello"
 
-            # ---- Build system prompt ----
-            base_prompt = agent.system_prompt or "You are a helpful agent."
+            # ---- Build role instructions ----
+            # NOTE: With claude-code provider, the --system flag is overridden by
+            # Claude Code's own system prompt (superpowers, etc). So we prepend
+            # role instructions to the MESSAGE instead, where they actually work.
+            role_prompt = agent.system_prompt or "You are a helpful agent."
 
-            # Substitute template variables if prompt uses {{placeholders}}
-            base_prompt = (
-                base_prompt
-                .replace("{{target_dir}}", work_dir)
-                .replace("{{complexity}}", "medium")
-                .replace("{{complexity_upper}}", "MEDIUM")
-                .replace("{{complexity_block}}", "Full research protocol.")
-            )
-
-            autonomous_directive = (
-                "\n\n## AUTONOMOUS MODE\n"
+            execution_context = (
+                "\n\n## EXECUTION CONTEXT\n"
+                f"**Working directory:** `{work_dir}`\n"
+                "All file operations should be within this directory.\n"
+                "\n## AUTONOMOUS MODE\n"
                 "You are running inside an automated workflow pipeline. "
                 "There is NO human available. You MUST:\n"
                 "- Make decisions autonomously — never ask clarifying questions\n"
                 "- Pick the best option and proceed\n"
                 "- Complete the task fully in one pass\n"
                 "- Do NOT wait for user input or confirmation\n"
+                "- Do NOT use brainstorming, planning, or other meta-skills\n"
+                "- Do NOT introduce yourself or ask what the user wants\n"
                 "\n## OUTPUT REQUIREMENT\n"
                 f"You MUST write your complete output to: `{output_md_path}`\n"
                 "This file is how the next agent in the pipeline receives your work.\n"
-                "If your role prompt specifies a JSON output format, write the JSON "
-                "block inside that file. Otherwise write a well-structured Markdown document.\n"
+                "Write it as a well-structured Markdown document.\n"
                 "Do NOT skip this step — if you don't write the file, the pipeline breaks.\n"
             )
 
-            full_prompt = base_prompt + "\n\n" + project_context + autonomous_directive
+            # Prepend role instructions to the input message (not system prompt)
+            role_block = (
+                "IMPORTANT — YOUR ROLE INSTRUCTIONS (follow these exactly):\n\n"
+                + role_prompt + "\n\n"
+                + project_context
+                + execution_context
+                + "\n\n---\n\n"
+            )
+            input_text = role_block + input_text
 
             agent_dict = {
-                "system_prompt": full_prompt,
+                "system_prompt": "Follow the role instructions provided in the message.",
                 "skills": agent.skills,
                 "memory": agent.memory,
                 "guardrails": agent.guardrails,

@@ -32,9 +32,12 @@ async def send_through_pipeline(
     base_prompt = agent_data.get("system_prompt", "You are a helpful AI agent.")
     skills = json.loads(agent_data.get("skills", "[]"))
     assembled = (
-        "IMPORTANT: You must follow the system prompt below. "
-        "Do NOT introduce yourself as Goose or describe generic capabilities. "
-        "Stay in character as defined below.\n\n"
+        "CRITICAL INSTRUCTION — READ THIS FIRST:\n"
+        "You are an autonomous agent in an automated pipeline. "
+        "You MUST follow the role and instructions defined below. "
+        "Do NOT introduce yourself. Do NOT ask questions. Do NOT describe your capabilities. "
+        "Do NOT use brainstorming, planning, or other meta-skills. "
+        "Just execute the task according to your role instructions below.\n\n"
         + build_prompt_with_skills(base_prompt, skills, db)
     )
 
