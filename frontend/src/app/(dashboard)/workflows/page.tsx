@@ -4,7 +4,7 @@ import React, { Suspense, useCallback, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useProjectStore } from "@/lib/store";
 import { ReactFlowProvider } from "reactflow";
-import { ArrowLeft, GitBranch, Plus, Trash2, Eye } from "lucide-react";
+import { ArrowLeft, GitBranch, Plus, Trash2, Eye, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { toast } from "sonner";
@@ -278,6 +278,33 @@ function WorkflowsPageContent() {
             <p className="text-sm text-muted-foreground">Loading workflows...</p>
           </CardContent>
         </Card>
+      )}
+
+      {/* Running Pipelines */}
+      {!loading && workflows.filter((wf) => wf.lastExecutionStatus === "running").length > 0 && (
+        <div>
+          <h2 className="text-lg font-medium mb-3 flex items-center gap-2">
+            <Loader2 className="h-4 w-4 animate-spin text-yellow-500" />
+            Running Pipelines
+          </h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {workflows.filter((wf) => wf.lastExecutionStatus === "running").map((wf) => (
+              <Card
+                key={`running-${wf.id}`}
+                className="p-4 cursor-pointer border-yellow-500/50 bg-yellow-500/5 hover:bg-yellow-500/10 transition-all"
+                onClick={() => router.push(`/workflows/${wf.id}?execution=${wf.lastExecutionId}`)}
+              >
+                <div className="flex items-center gap-2">
+                  <div className="h-2 w-2 rounded-full bg-yellow-500 animate-pulse" />
+                  <h3 className="text-sm font-medium">{wf.name}</h3>
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">
+                  {wf.nodes.length} nodes — click to view live execution
+                </p>
+              </Card>
+            ))}
+          </div>
+        </div>
       )}
 
       {/* Templates Section */}
