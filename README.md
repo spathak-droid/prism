@@ -144,8 +144,8 @@ Goose was chosen because:
    - **Simple:** Planner → Coder → Reviewer → Done
    - **Medium:** Researcher → Planner → Approval Gate → Coder(s) → Reviewer → Deployer
    - **Complex:** Multi-phase variant with parallel coders
-4. Each agent is a Goose subprocess with a 200-500 line role-specific system prompt
-5. Agents communicate via Pydantic JSON contracts
+4. Each agent is a Goose subprocess with a role-specific prompt loaded from `.md` files
+5. Agents communicate via `.workflow/{node_id}.md` handoff files
 6. `.factory/state.json` checkpoints every phase — resume from any point after failure
 7. Every tool call streams to the Monitor dashboard in real-time
 
@@ -178,7 +178,7 @@ prism/
 │   ├── routes/             # API endpoints (agents, projects, workflows, streaming, events)
 │   ├── services/           # Pipeline, Event Bus, Goose Manager, Telegram Bot, Scheduler
 │   ├── graphs/             # LangGraph definitions (simple, medium, complex, sandbox)
-│   ├── prompts/            # System prompts per role (200-500 lines each)
+│   ├── prompts/            # Role prompts as .md files (seeded into DB, editable in UI)
 │   ├── contracts/          # Pydantic schemas + state.json
 │   ├── skills/             # Reusable skill .md files (research, planning, tdd, code-review)
 │   └── tests/              # pytest integration tests
@@ -196,9 +196,10 @@ prism/
 
 ### Adding a New Agent Role
 
-1. Write a system prompt in `backend/prompts/{role}.py`
-2. Add a node function in `backend/graphs/nodes.py`
-3. Wire it into a graph definition — done. No model retraining.
+1. Write a system prompt in `backend/prompts/{role}.md`
+2. Restart the server — `demo_setup` seeds the prompt into the DB
+3. The agent is now available in the workflow builder and can be assigned to any node
+4. Prompts are editable in the UI — the `.md` file is the default, UI edits override it
 
 ### Adding a New Workflow Template
 
@@ -217,9 +218,27 @@ prism/
 ### Adding a New Skill
 
 1. Drop a `.md` file in `backend/skills/`
-2. Map it to roles in `backend/graphs/nodes.py` — it gets injected into prompts automatically
+2. Map it to roles in `ROLE_SKILLS` in `backend/graphs/nodes.py` — it gets injected into prompts automatically
 
 ### Adding New Guardrails
 
 1. Add logic to `backend/services/guardrails.py`
 2. Configure per-agent via the UI settings
+
+## Agent Configuration Dimensions
+
+Each agent is configurable across these dimensions (all via UI):
+
+| Dimension | Description |
+|-----------|-------------|
+| **System Prompt** | Role instructions, seeded from `.md` files, fully editable |
+| **Model** | claude-opus, claude-sonnet, claude-haiku, or any Goose-supported model |
+| **Provider** | claude-code, anthropic, openai, ollama, etc. |
+| **Tools** | Goose builtins: developer, analyze, apps, todo, summarize |
+| **Skills** | Reusable `.md` knowledge injected into prompts (research, tdd, code-review) |
+| **Schedule** | Cron expressions for recurring tasks |
+| **Memory** | Persistent key-value facts retained across sessions |
+| **Channels** | Telegram (extensible to Slack, Discord) |
+| **Guardrails** | Rate limits, cost limits, blocked actions |
+| **Interaction Rules** | What the agent can do autonomously vs. what requires approval |
+| **MCP Extensions** | External tool servers (e.g., Unity Editor via Coplay MCP) |
