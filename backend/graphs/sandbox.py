@@ -284,15 +284,15 @@ def _make_agent_node(
                 "Do NOT skip this step — if you don't write the file, the pipeline breaks.\n"
             )
 
-            # Prepend role instructions to the input message (not system prompt)
-            role_block = (
-                "IMPORTANT — YOUR ROLE INSTRUCTIONS (follow these exactly):\n\n"
+            # Build the full message: task FIRST (most important), then role, then context
+            input_text = (
+                input_text + "\n\n"
+                "---\n\n"
+                "YOUR ROLE INSTRUCTIONS (follow these exactly):\n\n"
                 + role_prompt + "\n\n"
                 + project_context
                 + execution_context
-                + "\n\n---\n\n"
             )
-            input_text = role_block + input_text
 
             agent_dict = {
                 "system_prompt": "Follow the role instructions provided in the message.",
