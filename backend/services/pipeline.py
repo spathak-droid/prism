@@ -49,6 +49,7 @@ async def send_through_pipeline(
     assembled += f"\n\n## GUARDRAILS\n{format_guardrails_for_prompt(guardrails)}"
 
     total_text = ""
+    actual_tokens = 0
     async for chunk in goose_manager.send_message(
         agent_id=agent_id,
         message=message,
@@ -61,6 +62,8 @@ async def send_through_pipeline(
     ):
         if chunk.type == "text":
             total_text += chunk.content
+        elif chunk.type == "usage" and chunk.total_tokens:
+            actual_tokens = chunk.total_tokens
         yield chunk
 
     from services.memory_manager import extract_memory_from_response, update_agent_memory
@@ -68,5 +71,6 @@ async def send_through_pipeline(
     if facts:
         update_agent_memory(agent_id, facts)
 
-    estimated_tokens = len(total_text) // 4
-    track_usage(db, agent_id, estimated_tokens)
+    # Use real token count from Goose, fall back to estimate if unavailable
+    tokens = actual_tokens or (len(total_text) // 4)
+    track_usage(db, agent_id, tokens)

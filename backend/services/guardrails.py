@@ -24,7 +24,8 @@ def check_cost_limit(db: Session, agent_id: str, limit: float) -> bool:
     usage = db.query(AgentUsage).filter(AgentUsage.agent_id == agent_id).first()
     if not usage:
         return True
-    estimated_cost = (usage.approximate_tokens / 1000) * 0.003
+    # Blended rate ~$0.01/1K tokens (mix of input/output, sonnet/opus)
+    estimated_cost = (usage.approximate_tokens / 1000) * 0.01
     return estimated_cost < limit
 
 

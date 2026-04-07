@@ -6,10 +6,11 @@ from typing import Optional
 
 @dataclass
 class StreamChunk:
-    type: str  # "text", "tool_request", "tool_response"
+    type: str  # "text", "tool_request", "tool_response", "usage"
     content: str
     tool_name: Optional[str] = None
     tool_args: Optional[str] = None
+    total_tokens: Optional[int] = None
 
 
 def parse_goose_line(line: str) -> list[StreamChunk]:
@@ -84,8 +85,16 @@ def parse_goose_line(line: str) -> list[StreamChunk]:
                 ))
         return chunks
 
-    # Skip Goose completion/metadata messages
-    if parsed.get("type") in ("complete", "usage", "metadata", "done"):
+    # Extract token usage from completion message
+    if parsed.get("type") == "complete" and parsed.get("total_tokens"):
+        chunks.append(StreamChunk(
+            type="usage", content="",
+            total_tokens=parsed["total_tokens"],
+        ))
+        return chunks
+
+    # Skip other metadata messages
+    if parsed.get("type") in ("usage", "metadata", "done"):
         return chunks
 
     # Fallback
