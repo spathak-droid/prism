@@ -11,12 +11,17 @@ from services.condition_evaluator import evaluate_condition
 from services.pipeline import send_through_pipeline
 from db.database import SessionLocal
 from db.models import Agent, Message, WorkflowExecution, new_id, utcnow
+from services.mcp_healthcheck import check_mcp_health
+
+
+MAX_NODE_VISITS = 3  # Max times a node can run (prevents infinite reject loops)
 
 
 class SandboxState(TypedDict):
     workflow_id: str
     execution_id: str
     node_results: dict  # node_id → output text
+    node_visit_counts: dict  # node_id → int (how many times visited)
     current_node: Optional[str]
     status: str
     error: Optional[str]
@@ -180,9 +185,31 @@ def _make_agent_node(
     """Create an async node function that runs an agent."""
     max_retries = 2
     backoff_delays = [5, 15]
-    node_timeout = node_data.get("timeout", 300)
+    # Agents with MCP extensions (e.g. Unity Coder on Opus) need more time
+    default_timeout = 300
+    if node_data.get("agentId"):
+        db_check = SessionLocal()
+        try:
+            _agent = db_check.query(Agent).filter(Agent.id == node_data["agentId"]).first()
+            if _agent and _agent.extensions and _agent.extensions != "[]":
+                default_timeout = 600  # 10 min for MCP agents
+        finally:
+            db_check.close()
+    node_timeout = node_data.get("timeout", default_timeout)
 
     async def node_func(state: SandboxState) -> dict:
+        # Track visit count to prevent infinite loops
+        visit_counts = {**state.get("node_visit_counts", {})}
+        visit_counts[node_id] = visit_counts.get(node_id, 0) + 1
+        if visit_counts[node_id] > MAX_NODE_VISITS:
+            msg = f"Node {node_id} exceeded max visits ({MAX_NODE_VISITS}). Breaking feedback loop."
+            print(f"[sandbox:{node_id}] {msg}")
+            return {
+                "node_results": {**state.get("node_results", {}), node_id: msg},
+                "node_visit_counts": visit_counts,
+                "current_node": node_id, "status": "running",
+            }
+
         db = SessionLocal()
         try:
             agent = db.query(Agent).filter(Agent.id == agent_id).first()
@@ -234,6 +261,15 @@ def _make_agent_node(
             # ---- Build system prompt ----
             base_prompt = agent.system_prompt or "You are a helpful agent."
 
+            # Substitute template variables if prompt uses {{placeholders}}
+            base_prompt = (
+                base_prompt
+                .replace("{{target_dir}}", work_dir)
+                .replace("{{complexity}}", "medium")
+                .replace("{{complexity_upper}}", "MEDIUM")
+                .replace("{{complexity_block}}", "Full research protocol.")
+            )
+
             autonomous_directive = (
                 "\n\n## AUTONOMOUS MODE\n"
                 "You are running inside an automated workflow pipeline. "
@@ -245,7 +281,8 @@ def _make_agent_node(
                 "\n## OUTPUT REQUIREMENT\n"
                 f"You MUST write your complete output to: `{output_md_path}`\n"
                 "This file is how the next agent in the pipeline receives your work.\n"
-                "Write it as a well-structured Markdown document.\n"
+                "If your role prompt specifies a JSON output format, write the JSON "
+                "block inside that file. Otherwise write a well-structured Markdown document.\n"
                 "Do NOT skip this step — if you don't write the file, the pipeline breaks.\n"
             )
 
@@ -258,9 +295,35 @@ def _make_agent_node(
                 "guardrails": agent.guardrails,
             }
 
+            extensions = json.loads(agent.extensions) if agent.extensions else []
+
+            # Pre-flight: verify MCP extensions are healthy before wasting time
+            for ext_url in extensions:
+                if ext_url.startswith("http://") or ext_url.startswith("https://"):
+                    ok, msg = await check_mcp_health(ext_url)
+                    if not ok:
+                        error_msg = f"MCP_PREFLIGHT_FAILED: {msg}"
+                        print(f"[sandbox:{node_id}] {error_msg}")
+                        new_results = {**state.get("node_results", {}), node_id: error_msg}
+                        execution_id = state.get("execution_id")
+                        if execution_id:
+                            exc = db.query(WorkflowExecution).filter(
+                                WorkflowExecution.id == execution_id
+                            ).first()
+                            if exc:
+                                exc.context = json.dumps({
+                                    "nodeResults": new_results,
+                                    "currentNode": node_id,
+                                    "status": "failed",
+                                    "error": error_msg,
+                                })
+                                db.commit()
+                        return {"node_results": new_results, "node_visit_counts": visit_counts, "current_node": node_id, "status": "running", "error": error_msg}
+
             goose_manager.register_agent(
                 agent.id, agent.name, agent.provider, agent.model,
                 json.loads(agent.tools),
+                extensions,
             )
 
             # Mark node as running
@@ -324,14 +387,25 @@ def _make_agent_node(
                                     "error": error_msg,
                                 })
                                 new_results = {**state.get("node_results", {}), node_id: error_msg}
-                                return {"node_results": new_results, "current_node": node_id, "status": "running", "error": error_msg}
+                                return {"node_results": new_results, "node_visit_counts": visit_counts, "current_node": node_id, "status": "running", "error": error_msg}
 
-                            if chunk.content.startswith("Error:"):
+                            if chunk.content.startswith("Error:") or chunk.content.startswith("Request failed:") or "terminated unexpectedly" in chunk.content:
                                 is_transient_failure = True
                                 last_error = chunk.content
                                 break
 
                             response_text += chunk.content
+
+                            # Emit live text so the frontend activity log can show what the agent is doing
+                            # Only emit chunks with enough content to be meaningful
+                            if chunk.content.strip() and len(chunk.content.strip()) > 10:
+                                await event_bus.emit("agent:text", {
+                                    "agent_id": agent.id,
+                                    "execution_id": execution_id,
+                                    "node_id": node_id,
+                                    "node_label": label,
+                                    "content": chunk.content.strip()[:300],
+                                })
 
                     if not is_transient_failure:
                         break  # Success — exit retry loop
@@ -363,7 +437,7 @@ def _make_agent_node(
                     "error": error_msg,
                 })
                 new_results = {**state.get("node_results", {}), node_id: error_msg}
-                return {"node_results": new_results, "current_node": node_id, "status": "running", "error": error_msg}
+                return {"node_results": new_results, "node_visit_counts": visit_counts, "current_node": node_id, "status": "running", "error": error_msg}
 
             # Check for AGENT_ERROR in response
             if response_text.startswith("AGENT_ERROR:"):
@@ -387,7 +461,7 @@ def _make_agent_node(
                     "error": error_msg,
                 })
                 new_results = {**state.get("node_results", {}), node_id: error_msg}
-                return {"node_results": new_results, "current_node": node_id, "status": "running", "error": error_msg}
+                return {"node_results": new_results, "node_visit_counts": visit_counts, "current_node": node_id, "status": "running", "error": error_msg}
 
             # Fallback: write .md from response if agent didn't
             if not os.path.exists(output_md_path) and response_text.strip():
@@ -411,7 +485,7 @@ def _make_agent_node(
             db.commit()
 
             new_results = {**state.get("node_results", {}), node_id: response_text}
-            return {"node_results": new_results, "current_node": node_id, "status": "running"}
+            return {"node_results": new_results, "node_visit_counts": visit_counts, "current_node": node_id, "status": "running"}
         finally:
             db.close()
 
