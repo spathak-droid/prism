@@ -74,6 +74,7 @@ from routes.streaming import router as streaming_router
 from routes.utils import router as utils_router
 from routes.workflows import router as workflows_router
 from routes.events import router as events_router
+from routes.factory import router as factory_router
 
 app.include_router(agents_router)
 app.include_router(projects_router)
@@ -83,3 +84,4 @@ app.include_router(streaming_router)
 app.include_router(utils_router)
 app.include_router(workflows_router)
 app.include_router(events_router)
+app.include_router(factory_router)
