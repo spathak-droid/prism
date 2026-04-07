@@ -282,6 +282,13 @@ def _make_agent_node(
                 "This file is how the next agent in the pipeline receives your work.\n"
                 "Write it as a well-structured Markdown document.\n"
                 "Do NOT skip this step — if you don't write the file, the pipeline breaks.\n"
+                "\n## MEMORY\n"
+                "If you discover a fact worth remembering for future sessions "
+                "(e.g., project uses Python 3.12, preferred test framework is pytest, "
+                "API base URL is /api/v2), write it on its own line as:\n"
+                "`[REMEMBER] key: value`\n"
+                "Example: `[REMEMBER] database: PostgreSQL 16`\n"
+                "Only remember facts that would be useful in future runs. Do not force it.\n"
             )
 
             # Build the full message: task FIRST (most important), then role, then context
