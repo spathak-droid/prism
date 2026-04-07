@@ -323,7 +323,13 @@ function WorkflowsPageContent() {
               <Card
                 key={wf.id}
                 className="p-4 cursor-pointer hover:border-primary/50 hover:bg-muted/50 hover:shadow-md hover:scale-[1.02] transition-all duration-200"
-                onClick={() => handleEdit(wf)}
+                onClick={() => {
+                  if (wf.lastExecutionStatus === "running") {
+                    router.push(`/workflows/${wf.id}?execution=${wf.lastExecutionId}`);
+                  } else {
+                    handleEdit(wf);
+                  }
+                }}
               >
                 <div className="flex items-start justify-between">
                   <div className="min-w-0 flex-1">
