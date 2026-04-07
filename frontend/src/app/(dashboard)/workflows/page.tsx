@@ -24,6 +24,8 @@ interface WorkflowItem {
   status: string;
   createdAt: string;
   updatedAt: string;
+  lastExecutionId?: string;
+  lastExecutionStatus?: string;
 }
 
 interface AgentItem {
@@ -74,6 +76,9 @@ function WorkflowsPageContent() {
     Promise.all([fetchWorkflows(), fetchAgents()]).finally(() =>
       setLoading(false)
     );
+    // Poll for execution status updates when any workflow is running
+    const interval = setInterval(fetchWorkflows, 5000);
+    return () => clearInterval(interval);
   }, [fetchWorkflows, fetchAgents]);
 
   useEffect(() => {
@@ -318,7 +323,7 @@ function WorkflowsPageContent() {
               <Card
                 key={wf.id}
                 className="p-4 cursor-pointer hover:border-primary/50 hover:bg-muted/50 hover:shadow-md hover:scale-[1.02] transition-all duration-200"
-                onClick={() => router.push(`/workflows/${wf.id}`)}
+                onClick={() => handleEdit(wf)}
               >
                 <div className="flex items-start justify-between">
                   <div className="min-w-0 flex-1">
@@ -338,6 +343,21 @@ function WorkflowsPageContent() {
                       >
                         {wf.status}
                       </Badge>
+                      {wf.lastExecutionStatus === "running" && (
+                        <Badge variant="default" className="text-[10px] bg-yellow-500 text-black animate-pulse">
+                          running
+                        </Badge>
+                      )}
+                      {wf.lastExecutionStatus === "completed" && (
+                        <Badge variant="default" className="text-[10px] bg-green-600">
+                          completed
+                        </Badge>
+                      )}
+                      {wf.lastExecutionStatus === "failed" && (
+                        <Badge variant="destructive" className="text-[10px]">
+                          failed
+                        </Badge>
+                      )}
                     </div>
                   </div>
                 </div>

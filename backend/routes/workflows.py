@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
 from db.database import get_db, SessionLocal
-from db.models import Workflow, WorkflowExecution, new_id, utcnow
+from db.models import Workflow, WorkflowExecution, Event, new_id, utcnow
 from graphs.sandbox import build_sandbox_graph, SandboxState
 from services.event_bus import event_bus
 from services.goose_manager import goose_manager
@@ -32,12 +32,22 @@ class UpdateWorkflowRequest(BaseModel):
 @router.get("")
 def list_workflows(db: Session = Depends(get_db)):
     workflows = db.query(Workflow).order_by(Workflow.created_at.desc()).all()
-    return [{
-        "id": w.id, "name": w.name, "description": w.description,
-        "nodes": json.loads(w.nodes), "edges": json.loads(w.edges),
-        "isTemplate": w.is_template, "status": w.status,
-        "createdAt": w.created_at, "updatedAt": w.updated_at,
-    } for w in workflows]
+    result = []
+    for w in workflows:
+        # Find the latest execution for this workflow
+        last_exec = db.query(WorkflowExecution).filter(
+            WorkflowExecution.workflow_id == w.id
+        ).order_by(WorkflowExecution.started_at.desc()).first()
+
+        result.append({
+            "id": w.id, "name": w.name, "description": w.description,
+            "nodes": json.loads(w.nodes), "edges": json.loads(w.edges),
+            "isTemplate": w.is_template, "status": w.status,
+            "createdAt": w.created_at, "updatedAt": w.updated_at,
+            "lastExecutionId": last_exec.id if last_exec else None,
+            "lastExecutionStatus": last_exec.status if last_exec else None,
+        })
+    return result
 
 
 @router.post("")
@@ -73,6 +83,24 @@ def get_execution(execution_id: str, db: Session = Depends(get_db)):
         "startedAt": e.started_at,
         "completedAt": e.completed_at,
     }
+
+
+@router.get("/executions/{execution_id}/events")
+def get_execution_events(execution_id: str, db: Session = Depends(get_db)):
+    """Return persisted events for a workflow execution (for log replay)."""
+    events = db.query(Event).filter(
+        Event.execution_id == execution_id
+    ).order_by(Event.timestamp.asc()).limit(500).all()
+    return [{
+        "type": ev.type,
+        "agent_id": ev.agent_id,
+        "status": ev.status,
+        "content": ev.content,
+        "tool_name": ev.tool_name,
+        "tool_type": ev.tool_type,
+        "timestamp": ev.timestamp,
+        "meta": json.loads(ev.meta) if ev.meta else {},
+    } for ev in events]
 
 
 @router.post("/executions/{execution_id}/stop")
