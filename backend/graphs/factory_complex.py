@@ -1,9 +1,17 @@
-"""Complex Factory SDLC graph: multi-phase variant of medium."""
+"""Complex Factory SDLC graph.
+
+Complex uses the same pipeline as medium (Researcher → Planner → Approval →
+Coder → Validator → Reviewer → QA → Deployer) but with higher limits:
+- More retry cycles on reviewer rejection (MAX_NODE_VISITS=3 vs medium's default)
+- Longer agent timeouts (research + coding steps get more time)
+- Checkpointed execution (resumable after failure)
+
+The graph topology is identical — complexity differences are handled by the
+role prompts (researcher.md, planner.md, coder.md) which adapt their depth
+based on the complexity parameter passed in the task message.
+"""
 from graphs.factory_medium import build_medium_graph, MediumProjectState
 
-
-# For v1, complex uses the same graph as medium.
-# Multi-phase execution will be added when needed.
 ComplexProjectState = MediumProjectState
 
 
