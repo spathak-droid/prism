@@ -62,7 +62,16 @@ uvicorn server:app --host 0.0.0.0 --port 8000 2>&1 &
 BACKEND_PID=$!
 
 cd "$DIR/frontend"
-npx next dev --port 3000 2>&1 &
+if [ "$DEV" = "1" ]; then
+  npx next dev --port 3000 2>&1 &
+else
+  # Production build is 10x lighter on CPU/RAM than dev mode
+  if [ ! -d ".next" ] || [ "$REBUILD" = "1" ]; then
+    echo "  Building frontend (one-time)..."
+    npx next build 2>&1
+  fi
+  npx next start --port 3000 2>&1 &
+fi
 FRONTEND_PID=$!
 
 # Wait for backend to be ready
@@ -98,6 +107,8 @@ echo -e "  ${BOLD}Open:${NC}     http://localhost:3000"
 echo -e "  ${BOLD}API:${NC}      http://localhost:8000/docs"
 echo ""
 echo -e "  Press ${BOLD}Ctrl+C${NC} to stop both servers."
+echo ""
+echo -e "  ${BLUE}Tip:${NC} DEV=1 ./start.sh for hot-reload | REBUILD=1 ./start.sh to rebuild frontend"
 echo ""
 
 # Keep running until Ctrl+C

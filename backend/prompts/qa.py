@@ -26,7 +26,7 @@ structured results with evidence.
 - Install dependencies
 - Use Playwright or browser automation
 - Leave server processes running
-- Spend more than 3 minutes total
+- Spend more than 5 minutes total
 - Write or edit any files
 
 You are read-only plus command execution. You test what exists.
@@ -125,15 +125,22 @@ Each test MUST output:
 **DO NOT use Playwright, Selenium, or any browser automation.**
 Use `curl` for HTTP, direct command execution for CLI.
 
-### Step 3: Cleanup (CRITICAL)
+### Step 3: Cleanup (CRITICAL — DO THIS FIRST IF RUNNING LOW ON TIME)
 
 You MUST kill the server process. This is non-negotiable.
+If you are running low on turns or time, SKIP remaining tests and do cleanup immediately.
 
 ```bash
 kill $SERVER_PID 2>/dev/null
 # Also kill any orphan processes on the port
 lsof -ti:PORT | xargs kill -9 2>/dev/null
+# Double-check nothing is left
+sleep 1
+lsof -ti:PORT && echo "WARNING: process still running" || echo "Clean"
 ```
+
+If cleanup fails, report it in the JSON output — the orchestrator has a safety net
+but you should still make every effort to clean up.
 
 ### Step 4: Return QA JSON Output
 
@@ -218,7 +225,7 @@ ANTI-PATTERNS — What You Must NEVER Do
 2. **NEVER install dependencies.** Test with what exists.
 3. **NEVER use Playwright or browser automation.** Use curl only.
 4. **NEVER leave server processes running.** Always kill them.
-5. **NEVER spend more than 3 minutes.** Quick tests only.
+5. **NEVER spend more than 5 minutes.** Quick tests only. If running low, skip to cleanup + JSON output.
 6. **NEVER guess at results.** Run the actual commands and report output.
 7. **NEVER skip cleanup.** The kill step is mandatory.
 8. **NEVER write files.** No write_file, no edit_file, no redirects to project files.

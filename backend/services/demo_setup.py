@@ -164,6 +164,58 @@ Final verdict: **ALL CHECKS PASSED** or **FAILED AT STEP N** with the exact erro
     },
 ]
 
+UNITY_CODER_PROMPT = """You are a Unity C# developer working inside an existing Unity project.
+You have access to the Unity Editor via MCP (Coplay/unity-mcp) tools.
+
+## MCP-First Workflow — ALWAYS FOLLOW THIS ORDER
+
+### Step 1: Understand the Project
+1. Read CLAUDE.md / README.md if they exist
+2. Use `manage_scene(action="get_hierarchy")` to see the current scene structure
+3. Use `find_gameobjects` to discover what exists (by name, tag, component)
+4. Read existing C# scripts in the Assets folder to understand the architecture
+
+### Step 2: Plan Before Coding
+- Identify which existing scripts to modify vs new scripts to create
+- Map out component references you'll need to wire
+- Check if prefabs exist that you should use
+
+### Step 3: Implement
+For each change:
+- Create/edit .cs files using the developer tool
+- Wait for Unity compilation after creating scripts
+- Attach scripts to GameObjects via `manage_gameobject(action="modify", components_to_add=[...])`
+- Wire component references via `manage_components(action="set_property", ...)`
+- Use `batch_execute` for multiple operations (10-100x faster)
+
+### Step 4: Verify
+- Use `manage_camera(action="screenshot", include_image=true)` to visually check
+- Read console for errors: `read_console(types=["error"])`
+- Run tests if they exist: `run_tests(mode="EditMode")`
+
+### Step 5: Commit
+- Stage and commit with a clear message
+
+## C# Rules
+- One MonoBehaviour per file, filename matches class name
+- Use `[SerializeField] private` instead of `public` for Inspector fields
+- Cache GetComponent results in Awake(), never in Update()
+- Use `Time.deltaTime` for frame-rate independent movement
+- No Debug.Log in final code
+- No GameObject.Find() in Update loops
+- Match the existing code style
+- If tests exist, make sure they still pass
+- Always verify with a screenshot"""
+
+DEMO_UNITY_AGENT = {
+    "name": "Unity Coder",
+    "role": "unity-coder",
+    "model": "claude-opus-4-20250514",
+    "system_prompt": UNITY_CODER_PROMPT,
+    "channels": [],
+    "extensions": ["http://127.0.0.1:8082/mcp"],
+}
+
 WORKFLOW_TEMPLATES = [
     {
         "name": "Development Pipeline",
@@ -181,6 +233,24 @@ WORKFLOW_TEMPLATES = [
             {"id": "e-build-rev", "source": "node-builder", "target": "node-reviewer", "type": "conditionEdge", "animated": True, "data": {"condition": "always"}},
             {"id": "e-rev-deploy", "source": "node-reviewer", "target": "node-deployer", "type": "conditionEdge", "animated": True, "data": {"condition": "always"}},
             {"id": "e-rev-build", "source": "node-reviewer", "target": "node-builder", "type": "conditionEdge", "animated": True, "data": {"condition": "rejected"}},
+        ],
+    },
+    {
+        "name": "Unity Development Pipeline",
+        "description": "Full Unity SDLC: research, plan, build with Coplay MCP, review, deploy",
+        "nodes": [
+            {"id": "node-researcher", "type": "agentNode", "position": {"x": 0, "y": 60}, "data": {"agentId": None, "label": "Researcher", "status": "idle"}},
+            {"id": "node-planner", "type": "agentNode", "position": {"x": 280, "y": 60}, "data": {"agentId": None, "label": "Planner", "status": "idle"}},
+            {"id": "node-unity-coder", "type": "agentNode", "position": {"x": 560, "y": 60}, "data": {"agentId": None, "label": "Unity Coder", "status": "idle"}},
+            {"id": "node-reviewer", "type": "agentNode", "position": {"x": 840, "y": 60}, "data": {"agentId": None, "label": "Reviewer", "status": "idle"}},
+            {"id": "node-deployer", "type": "agentNode", "position": {"x": 1120, "y": 60}, "data": {"agentId": None, "label": "Deployer", "status": "idle"}},
+        ],
+        "edges": [
+            {"id": "e-res-plan", "source": "node-researcher", "target": "node-planner", "type": "conditionEdge", "animated": True, "data": {"condition": "always"}},
+            {"id": "e-plan-build", "source": "node-planner", "target": "node-unity-coder", "type": "conditionEdge", "animated": True, "data": {"condition": "always"}},
+            {"id": "e-build-rev", "source": "node-unity-coder", "target": "node-reviewer", "type": "conditionEdge", "animated": True, "data": {"condition": "always"}},
+            {"id": "e-rev-deploy", "source": "node-reviewer", "target": "node-deployer", "type": "conditionEdge", "animated": True, "data": {"condition": "always"}},
+            {"id": "e-rev-build", "source": "node-reviewer", "target": "node-unity-coder", "type": "conditionEdge", "animated": True, "data": {"condition": "rejected"}},
         ],
     },
     {
@@ -202,6 +272,8 @@ AGENT_TEMPLATES = [
     {"name": "Builder", "role": "coder", "description": "TDD implementation of tickets", "skills": ["tdd", "conventions"], "tools": ["developer", "analyze"], "category": "sdlc", "model": "claude-opus-4-20250514", "provider": "claude-code"},
     {"name": "Reviewer", "role": "reviewer", "description": "Code review + security review", "skills": ["code-review", "security-review"], "tools": ["developer", "analyze"], "category": "sdlc", "model": "claude-sonnet-4-20250514", "provider": "claude-code"},
     {"name": "Deployer", "role": "deployer", "description": "Build validation + deployment", "skills": ["conventions"], "tools": ["developer", "analyze"], "category": "sdlc", "model": "claude-haiku-4-20250506", "provider": "claude-code"},
+    {"name": "QA", "role": "qa", "description": "Integration testing — starts apps, verifies acceptance criteria with curl", "skills": ["api-checklist", "frontend-checklist"], "tools": ["developer", "analyze"], "category": "sdlc", "model": "claude-sonnet-4-20250514", "provider": "claude-code"},
+    {"name": "Unity Coder", "role": "unity-coder", "description": "C# implementation for Unity projects via Coplay MCP", "skills": ["unity-game-checklist", "unity-conventions"], "tools": ["developer", "analyze"], "extensions": ["http://127.0.0.1:8082/mcp"], "category": "sdlc", "model": "claude-opus-4-20250514", "provider": "claude-code"},
 ]
 
 
@@ -216,6 +288,7 @@ def setup_demo(db: Session) -> dict:
             existing.provider = tmpl.get("provider", "claude-code")
             existing.skills = json.dumps(tmpl["skills"])
             existing.tools = json.dumps(tmpl["tools"])
+            existing.extensions = json.dumps(tmpl.get("extensions", []))
             existing.description = tmpl["description"]
         else:
             db.add(AgentTemplate(
@@ -226,19 +299,22 @@ def setup_demo(db: Session) -> dict:
                 provider=tmpl.get("provider", "claude-code"),
                 skills=json.dumps(tmpl["skills"]),
                 tools=json.dumps(tmpl["tools"]),
+                extensions=json.dumps(tmpl.get("extensions", [])),
                 category=tmpl["category"],
                 created_at=now,
             ))
 
     created = 0
-    for demo in DEMO_AGENTS:
+    all_demos = DEMO_AGENTS + [DEMO_UNITY_AGENT]
+    for demo in all_demos:
         existing = db.query(Agent).filter(Agent.name == demo["name"]).first()
         if not existing:
             db.add(Agent(
                 id=new_id(), name=demo["name"], role=demo["role"],
                 system_prompt=demo["system_prompt"],
                 model=demo.get("model", "claude-sonnet-4-20250514"),
-                channels=json.dumps(demo["channels"]),
+                channels=json.dumps(demo.get("channels", [])),
+                extensions=json.dumps(demo.get("extensions", [])),
                 created_at=now, updated_at=now,
             ))
             created += 1

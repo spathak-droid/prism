@@ -109,6 +109,7 @@ async def test_sandbox_node_retries_on_error():
     mock_agent.skills = "[]"
     mock_agent.memory = "{}"
     mock_agent.guardrails = "{}"
+    mock_agent.extensions = "[]"
 
     mock_db = MagicMock()
     mock_db.query.return_value.filter.return_value.first.return_value = mock_agent
@@ -160,6 +161,7 @@ async def test_sandbox_node_detects_agent_error():
     mock_agent.skills = "[]"
     mock_agent.memory = "{}"
     mock_agent.guardrails = "{}"
+    mock_agent.extensions = "[]"
 
     mock_execution = MagicMock()
     mock_db = MagicMock()
@@ -220,6 +222,7 @@ async def test_sandbox_node_detects_sandbox_violation():
     mock_agent.skills = "[]"
     mock_agent.memory = "{}"
     mock_agent.guardrails = "{}"
+    mock_agent.extensions = "[]"
 
     mock_db = MagicMock()
     mock_db.query.return_value.filter.return_value.first.return_value = mock_agent

@@ -20,7 +20,9 @@ ROLE_SKILLS = {
     "researcher": ["research"],
     "planner": ["planning", "conventions"],
     "coder": ["tdd", "conventions"],
+    "unity-coder": ["unity-game-checklist", "unity-conventions"],
     "reviewer": ["code-review", "security-review"],
+    "qa": ["api-checklist", "frontend-checklist"],
     "deployer": ["conventions"],
 }
 
@@ -42,7 +44,7 @@ def get_project_agent_id(project_id: str, role: str) -> str:
 
 
 def get_project_agent_config(project_id: str, role: str) -> dict:
-    """Look up agent ID, model, and provider for a role in a project."""
+    """Look up agent ID, model, provider, and extensions for a role in a project."""
     from db.models import ProjectAgent, Agent
     db = SessionLocal()
     try:
@@ -57,6 +59,7 @@ def get_project_agent_config(project_id: str, role: str) -> dict:
                     "agent_id": agent.id,
                     "provider": agent.provider,
                     "model": agent.model,
+                    "extensions": json.loads(agent.extensions) if agent.extensions else [],
                 }
     finally:
         db.close()
@@ -64,6 +67,7 @@ def get_project_agent_config(project_id: str, role: str) -> dict:
         "agent_id": f"{role}-{project_id[:8]}",
         "provider": "claude-code",
         "model": "claude-opus-4-20250514",
+        "extensions": [],
     }
 
 
@@ -184,9 +188,10 @@ async def run_goose_agent(
     max_turns: int = 15,
     timeout: int = 300,
     max_retries: int = 2,
+    extensions: list[str] | None = None,
 ) -> str:
     """Spawn a Goose subprocess and collect full response. Retries on transient failures."""
-    goose_manager.register_agent(agent_id, agent_name, provider, model, ["developer", "analyze"])
+    goose_manager.register_agent(agent_id, agent_name, provider, model, ["developer", "analyze"], extensions or [])
     _set_agent_db_status(agent_id, "running")
 
     backoff_delays = [5, 15]
@@ -297,6 +302,7 @@ async def planner_node(state: dict) -> dict:
         target_dir=target_dir,
         provider=agent_cfg["provider"],
         model=agent_cfg["model"],
+        extensions=agent_cfg.get("extensions", []),
     )
 
     if response.startswith("AGENT_ERROR:"):
@@ -491,6 +497,7 @@ async def _run_coder_for_ticket(ticket: dict, state: dict, system_prompt: str, t
         target_dir=target_dir,
         provider=agent_cfg["provider"],
         model=agent_cfg["model"],
+        extensions=agent_cfg.get("extensions", []),
     )
 
     # Rollback on agent error
@@ -811,6 +818,7 @@ async def reviewer_node(state: dict) -> dict:
 async def researcher_node(state: dict) -> dict:
     """LangGraph node: Researcher agent."""
     from prompts.researcher import get_system_prompt
+    from contracts.schemas import ResearchOutput
 
     target_dir = state["target_dir"]
     complexity = state["complexity"]
@@ -832,25 +840,80 @@ async def researcher_node(state: dict) -> dict:
     )
 
     agent_cfg = get_project_agent_config(state["project_id"], "researcher")
-    response = await run_goose_agent(
-        agent_id=agent_cfg["agent_id"],
-        agent_name="Researcher",
-        system_prompt=system_prompt,
-        message=message,
-        target_dir=target_dir,
-        provider=agent_cfg["provider"],
-        model=agent_cfg["model"],
-    )
 
-    json_str = extract_json_block(response)
+    # Retry loop: researcher output MUST parse to ResearchOutput.
+    # If the agent runs but produces garbage JSON, we retry with explicit feedback.
+    max_research_attempts = 2
     research = None
-    if json_str:
+    last_response = ""
+
+    for attempt in range(max_research_attempts):
+        attempt_message = message
+        if attempt > 0:
+            # Feed back the parse error so the agent can fix its output
+            attempt_message = (
+                f"{message}\n\n"
+                f"IMPORTANT: Your previous attempt did not produce valid JSON. "
+                f"The parse error was:\n{last_parse_error}\n\n"
+                f"You MUST return a valid JSON block wrapped in ```json ... ``` fences. "
+                f"Double-check your JSON syntax (no trailing commas, proper quoting)."
+            )
+
+        response = await run_goose_agent(
+            agent_id=agent_cfg["agent_id"],
+            agent_name="Researcher",
+            system_prompt=system_prompt,
+            message=attempt_message,
+            target_dir=target_dir,
+            provider=agent_cfg["provider"],
+            model=agent_cfg["model"],
+            extensions=agent_cfg.get("extensions", []),
+            timeout=600,  # Research needs web searches — give it time
+        )
+        last_response = response
+
+        if response.startswith("AGENT_ERROR:"):
+            print(f"[researcher_node] Agent error on attempt {attempt + 1}: {response[:200]}")
+            last_parse_error = response[:500]
+            continue
+
+        json_str = extract_json_block(response)
+        if not json_str:
+            last_parse_error = "No JSON block found in response. Response started with: " + response[:300]
+            print(f"[researcher_node] No JSON found on attempt {attempt + 1}")
+            continue
+
         try:
-            from contracts.schemas import ResearchOutput
             research_data = json.loads(json_str)
             research = ResearchOutput(**research_data)
+            break  # Success
+        except json.JSONDecodeError as e:
+            last_parse_error = f"Invalid JSON: {e}"
+            print(f"[researcher_node] JSON decode error on attempt {attempt + 1}: {e}")
         except Exception as e:
-            print(f"[researcher_node] Failed to parse ResearchOutput: {e}")
+            last_parse_error = f"Schema validation failed: {e}"
+            print(f"[researcher_node] Schema validation error on attempt {attempt + 1}: {e}")
+
+    if research is None:
+        update_phase(target_dir, "researcher", {"status": "failed", "completed_at": utcnow()})
+        await event_bus.emit("project:update", {
+            "project_id": state["project_id"], "phase": "researcher", "status": "failed",
+        })
+        # Return a minimal research stub so the planner can still proceed with caveats
+        return {
+            "research": {
+                "tech_landscape": {},
+                "prior_art": [],
+                "risks": [{"category": "technical", "severity": "high",
+                           "description": "Research agent failed to produce valid output. "
+                                          "Planner must make technology decisions without verified research.",
+                           "mitigation": "Planner should validate all technology choices independently."}],
+                "recommended_stack": {},
+                "constraints": {"must_use": [], "avoid": []},
+            },
+            "status": "planning",
+            "error": f"Researcher failed after {max_research_attempts} attempts",
+        }
 
     update_phase(target_dir, "researcher", {"status": "completed", "completed_at": utcnow()})
     await event_bus.emit("project:update", {
@@ -858,7 +921,7 @@ async def researcher_node(state: dict) -> dict:
     })
 
     return {
-        "research": research.model_dump() if research else None,
+        "research": research.model_dump(),
         "status": "planning",
     }
 
@@ -893,6 +956,7 @@ async def deployer_node(state: dict) -> dict:
         target_dir=target_dir,
         provider=agent_cfg["provider"],
         model=agent_cfg["model"],
+        extensions=agent_cfg.get("extensions", []),
     )
 
     json_str = extract_json_block(response)
@@ -1034,6 +1098,7 @@ def check_review_outcome(state: dict) -> str:
 async def qa_node(state: dict) -> dict:
     """LangGraph node: QA agent. Starts the app and runs integration tests."""
     from prompts.qa import get_system_prompt
+    import subprocess as _subprocess
 
     target_dir = state["target_dir"]
     tickets = state.get("tickets", [])
@@ -1044,6 +1109,8 @@ async def qa_node(state: dict) -> dict:
     })
 
     system_prompt = get_system_prompt(target_dir)
+    # QA gets skills injected too
+    system_prompt = assemble_prompt_with_skills(system_prompt, "qa")
 
     # Collect all acceptance criteria from all tickets
     all_acs = []
@@ -1073,9 +1140,14 @@ async def qa_node(state: dict) -> dict:
         target_dir=target_dir,
         provider=agent_cfg["provider"],
         model=agent_cfg["model"],
-        max_turns=20,
-        timeout=180,
+        extensions=agent_cfg.get("extensions", []),
+        max_turns=25,
+        timeout=420,  # 7 min — server startup + tests + cleanup needs room
     )
+
+    # Safety net: kill any orphaned server processes on common dev ports
+    # The QA agent SHOULD clean up, but if it times out or crashes, we do it here.
+    _cleanup_orphaned_servers(target_dir)
 
     if response.startswith("AGENT_ERROR:"):
         update_phase(target_dir, "qa", {"status": "failed", "completed_at": utcnow()})
@@ -1096,19 +1168,46 @@ async def qa_node(state: dict) -> dict:
         except Exception as e:
             print(f"[qa_node] Failed to parse QAResult: {e}")
 
-    update_phase(target_dir, "qa", {"status": "completed", "completed_at": utcnow()})
-    await event_bus.emit("project:update", {
-        "project_id": state["project_id"], "phase": "qa", "status": "completed",
-    })
-
     if qa_result:
         result_dict = qa_result.model_dump()
-        status = "completed" if qa_result.status == "pass" else "qa_failed"
+        qa_status = "pass" if qa_result.status == "pass" else "fail"
     else:
         result_dict = {"status": "fail", "server_started": False, "tests": [], "summary": "Could not parse QA result"}
-        status = "qa_failed"
+        qa_status = "fail"
 
-    return {"qa_result": result_dict, "status": status}
+    phase_status = "completed" if qa_status == "pass" else "failed"
+    pipeline_status = "completed" if qa_status == "pass" else "qa_failed"
+
+    update_phase(target_dir, "qa", {"status": phase_status, "completed_at": utcnow()})
+    await event_bus.emit("project:update", {
+        "project_id": state["project_id"], "phase": "qa", "status": phase_status,
+    })
+
+    return {"qa_result": result_dict, "status": pipeline_status}
+
+
+def _cleanup_orphaned_servers(target_dir: str):
+    """Kill any dev server processes that the QA agent may have left behind.
+
+    Scans ports 9100-9199 (the range the QA prompt uses) for listening processes
+    whose cwd matches target_dir, and kills them.
+    """
+    import subprocess as _sp
+    for port in range(9100, 9200):
+        try:
+            result = _sp.run(
+                ["lsof", "-ti", f":{port}"],
+                capture_output=True, text=True, timeout=5,
+            )
+            pids = result.stdout.strip()
+            if pids:
+                for pid in pids.split("\n"):
+                    pid = pid.strip()
+                    if pid:
+                        _sp.run(["kill", "-9", pid], capture_output=True, timeout=5)
+                        print(f"[qa_cleanup] Killed orphaned process {pid} on port {port}")
+        except Exception:
+            pass
 
 
 def check_qa_outcome(state: dict) -> str:
