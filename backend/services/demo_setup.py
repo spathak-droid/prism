@@ -325,17 +325,25 @@ def setup_demo(db: Session) -> dict:
     created = 0
     all_demos = DEMO_AGENTS + [DEMO_UNITY_AGENT]
     for demo in all_demos:
+        # Use .md prompt if available, otherwise use the hardcoded demo prompt
+        md_prompt = _load_role_prompt_for_seed(demo["role"])
+        prompt = md_prompt or demo["system_prompt"]
+
         existing = db.query(Agent).filter(Agent.name == demo["name"]).first()
         if not existing:
             db.add(Agent(
                 id=new_id(), name=demo["name"], role=demo["role"],
-                system_prompt=demo["system_prompt"],
+                system_prompt=prompt,
                 model=demo.get("model", "claude-sonnet-4-20250514"),
                 channels=json.dumps(demo.get("channels", [])),
                 extensions=json.dumps(demo.get("extensions", [])),
                 created_at=now, updated_at=now,
             ))
             created += 1
+        elif md_prompt and len(existing.system_prompt or "") < len(md_prompt):
+            # Upgrade existing agents to .md prompt if theirs is shorter (generic/outdated)
+            existing.system_prompt = md_prompt
+            existing.updated_at = now
 
     for wt in WORKFLOW_TEMPLATES:
         existing = db.query(Workflow).filter(Workflow.name == wt["name"], Workflow.is_template == True).first()
