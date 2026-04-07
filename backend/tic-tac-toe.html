@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Tic Tac Toe</title>
+  <style>
+    /* ============ RESET & LAYOUT ============ */
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      background: #1a1a2e;
+      color: #e0e0e0;
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      overflow: hidden;
+    }
+
+    /* ============ GAME CONTAINER ============ */
+    .game-container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 20px;
+    }
+
+    h1 {
+      font-size: 2rem;
+      color: #e94560;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+    }
+
+    /* ============ HUD ============ */
+    .hud {
+      display: flex;
+      gap: 40px;
+      font-size: 1.1rem;
+    }
+
+    .hud-item {
+      text-align: center;
+    }
+
+    .hud-label {
+      font-size: 0.8rem;
+      color: #888;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    .hud-value {
+      font-size: 1.4rem;
+      font-weight: bold;
+      margin-top: 4px;
+    }
+
+    .hud-value.x-color {
+      color: #e94560;
+    }
+
+    .hud-value.o-color {
+      color: #0f3460;
+    }
+
+    .hud-value.draw-color {
+      color: #888;
+    }
+
+    /* ============ STATUS ============ */
+    .status {
+      font-size: 1.2rem;
+      min-height: 30px;
+      text-align: center;
+    }
+
+    .status.x-turn {
+      color: #e94560;
+    }
+
+    .status.o-turn {
+      color: #53a8e2;
+    }
+
+    .status.winner {
+      font-size: 1.4rem;
+      font-weight: bold;
+      animation: pulse 0.6s ease-in-out infinite alternate;
+    }
+
+    @keyframes pulse {
+      from { opacity: 0.7; }
+      to { opacity: 1; }
+    }
+
+    /* ============ CANVAS ============ */
+    canvas {
+      border-radius: 12px;
+      cursor: pointer;
+      touch-action: none;
+    }
+
+    /* ============ BUTTONS ============ */
+    .btn {
+      padding: 12px 32px;
+      font-size: 1rem;
+      font-weight: bold;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      transition: transform 0.1s, opacity 0.2s;
+    }
+
+    .btn:hover {
+      transform: scale(1.05);
+    }
+
+    .btn:active {
+      transform: scale(0.97);
+    }
+
+    .btn-primary {
+      background: #e94560;
+      color: #fff;
+    }
+
+    .btn-secondary {
+      background: #16213e;
+      color: #e0e0e0;
+      border: 1px solid #333;
+    }
+
+    .btn-group {
+      display: flex;
+      gap: 12px;
+    }
+
+    /* ============ START SCREEN ============ */
+    .overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(26, 26, 46, 0.95);
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      gap: 24px;
+      z-index: 10;
+    }
+
+    .overlay.hidden {
+      display: none;
+    }
+
+    .overlay h2 {
+      font-size: 1.8rem;
+      color: #e94560;
+    }
+
+    .overlay p {
+      color: #aaa;
+      font-size: 1rem;
+    }
+
+    /* ============ RESPONSIVE ============ */
+    @media (max-width: 480px) {
+      h1 {
+        font-size: 1.5rem;
+      }
+
+      .hud {
+        gap: 24px;
+      }
+
+      .status {
+        font-size: 1rem;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="game-container">
+    <h1>Tic Tac Toe</h1>
+
+    <!-- HUD — Score tracking -->
+    <div class="hud">
+      <div class="hud-item">
+        <div class="hud-label">X Wins</div>
+        <div class="hud-value x-color" id="x-score">0</div>
+      </div>
+      <div class="hud-item">
+        <div class="hud-label">Draws</div>
+        <div class="hud-value draw-color" id="draw-score">0</div>
+      </div>
+      <div class="hud-item">
+        <div class="hud-label">O Wins</div>
+        <div class="hud-value o-color" id="o-score">0</div>
+      </div>
+    </div>
+
+    <!-- Status message -->
+    <div class="status x-turn" id="status">Player X's turn</div>
+
+    <!-- Canvas — game board rendered here -->
+    <canvas id="game-canvas" width="360" height="360"></canvas>
+
+    <!-- Buttons -->
+    <div class="btn-group">
+      <button class="btn btn-primary" id="restart-btn">New Game</button>
+      <button class="btn btn-secondary" id="reset-btn">Reset Scores</button>
+    </div>
+  </div>
+
+  <!-- Start screen overlay -->
+  <div class="overlay" id="start-screen">
+    <h2>Tic Tac Toe</h2>
+    <p>Two players take turns. Get 3 in a row to win!</p>
+    <button class="btn btn-primary" id="start-btn">Play</button>
+  </div>
+
+  <script>
+    // ============ CONSTANTS ============
+    const CANVAS_SIZE = 360
+    const CELL_SIZE = CANVAS_SIZE / 3
+    const LINE_WIDTH = 4
+    const MARK_PADDING = 30
+    const MARK_LINE_WIDTH = 6
+    const WIN_LINE_WIDTH = 8
+
+    const COLORS = {
+      background: '#16213e',
+      gridLine: '#2a2a4a',
+      x: '#e94560',
+      o: '#53a8e2',
+      winLine: '#f5c518',
+      hoverCell: 'rgba(255, 255, 255, 0.05)',
+    }
+
+    const WIN_PATTERNS = [
+      // Rows
+      [[0, 0], [0, 1], [0, 2]],
+      [[1, 0], [1, 1], [1, 2]],
+      [[2, 0], [2, 1], [2, 2]],
+      // Columns
+      [[0, 0], [1, 0], [2, 0]],
+      [[0, 1], [1, 1], [2, 1]],
+      [[0, 2], [1, 2], [2, 2]],
+      // Diagonals
+      [[0, 0], [1, 1], [2, 2]],
+      [[0, 2], [1, 1], [2, 0]],
+    ]
+
+    // ============ GAME STATE ============
+    const canvas = document.getElementById('game-canvas')
+    const ctx = canvas.getContext('2d')
+
+    const state = {
+      board: createEmptyBoard(),
+      currentPlayer: 'X',
+      gameState: 'start', // 'start', 'playing', 'gameOver'
+      winPattern: null,
+      winner: null,
+      scores: loadScores(),
+      hoverCell: null,
+    }
+
+    // ============ STATE HELPERS ============
+    function createEmptyBoard() {
+      return [
+        [null, null, null],
+        [null, null, null],
+        [null, null, null],
+      ]
+    }
+
+    function loadScores() {
+      try {
+        const saved = localStorage.getItem('tictactoe-scores')
+        if (saved) {
+          return JSON.parse(saved)
+        }
+      } catch {
+        // Corrupted storage — use defaults
+      }
+      return { X: 0, O: 0, draw: 0 }
+    }
+
+    function saveScores() {
+      try {
+        localStorage.setItem('tictactoe-scores', JSON.stringify(state.scores))
+      } catch {
+        // Storage full or unavailable — silently ignore
+      }
+    }
+
+    // ============ GAME LOGIC ============
+    function checkWinner() {
+      for (const pattern of WIN_PATTERNS) {
+        const [[r0, c0], [r1, c1], [r2, c2]] = pattern
+        const a = state.board[r0][c0]
+        const b = state.board[r1][c1]
+        const c = state.board[r2][c2]
+        if (a && a === b && b === c) {
+          return { winner: a, pattern }
+        }
+      }
+      return null
+    }
+
+    function isBoardFull() {
+      return state.board.every(row => row.every(cell => cell !== null))
+    }
+
+    function makeMove(row, col) {
+      if (state.gameState !== 'playing') return false
+      if (state.board[row][col] !== null) return false
+
+      state.board[row][col] = state.currentPlayer
+
+      const result = checkWinner()
+      if (result) {
+        state.winner = result.winner
+        state.winPattern = result.pattern
+        state.gameState = 'gameOver'
+        state.scores[result.winner]++
+        saveScores()
+        updateHUD()
+        return true
+      }
+
+      if (isBoardFull()) {
+        state.winner = null
+        state.gameState = 'gameOver'
+        state.scores.draw++
+        saveScores()
+        updateHUD()
+        return true
+      }
+
+      // Switch turns
+      state.currentPlayer = state.currentPlayer === 'X' ? 'O' : 'X'
+      updateStatus()
+      return true
+    }
+
+    function getCellFromPosition(x, y) {
+      const rect = canvas.getBoundingClientRect()
+      const scaleX = CANVAS_SIZE / rect.width
+      const scaleY = CANVAS_SIZE / rect.height
+      const canvasX = (x - rect.left) * scaleX
+      const canvasY = (y - rect.top) * scaleY
+
+      const col = Math.floor(canvasX / CELL_SIZE)
+      const row = Math.floor(canvasY / CELL_SIZE)
+
+      if (row >= 0 && row < 3 && col >= 0 && col < 3) {
+        return { row, col }
+      }
+      return null
+    }
+
+    // ============ RENDERING ============
+    function render() {
+      drawBackground()
+      drawGrid()
+      drawHoverHighlight()
+      drawMarks()
+      drawWinLine()
+    }
+
+    function drawBackground() {
+      ctx.fillStyle = COLORS.background
+      ctx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE)
+    }
+
+    function drawGrid() {
+      ctx.strokeStyle = COLORS.gridLine
+      ctx.lineWidth = LINE_WIDTH
+      ctx.lineCap = 'round'
+
+      // Vertical lines
+      for (let i = 1; i < 3; i++) {
+        const x = i * CELL_SIZE
+        ctx.beginPath()
+        ctx.moveTo(x, 10)
+        ctx.lineTo(x, CANVAS_SIZE - 10)
+        ctx.stroke()
+      }
+
+      // Horizontal lines
+      for (let i = 1; i < 3; i++) {
+        const y = i * CELL_SIZE
+        ctx.beginPath()
+        ctx.moveTo(10, y)
+        ctx.lineTo(CANVAS_SIZE - 10, y)
+        ctx.stroke()
+      }
+    }
+
+    function drawHoverHighlight() {
+      if (state.gameState !== 'playing' || !state.hoverCell) return
+      const { row, col } = state.hoverCell
+      if (state.board[row][col] !== null) return
+
+      ctx.fillStyle = COLORS.hoverCell
+      ctx.fillRect(col * CELL_SIZE, row * CELL_SIZE, CELL_SIZE, CELL_SIZE)
+    }
+
+    function drawMarks() {
+      for (let row = 0; row < 3; row++) {
+        for (let col = 0; col < 3; col++) {
+          const mark = state.board[row][col]
+          if (!mark) continue
+
+          const centerX = col * CELL_SIZE + CELL_SIZE / 2
+          const centerY = row * CELL_SIZE + CELL_SIZE / 2
+
+          if (mark === 'X') {
+            drawX(centerX, centerY)
+          } else {
+            drawO(centerX, centerY)
+          }
+        }
+      }
+    }
+
+    function drawX(cx, cy) {
+      const half = CELL_SIZE / 2 - MARK_PADDING
+      ctx.strokeStyle = COLORS.x
+      ctx.lineWidth = MARK_LINE_WIDTH
+      ctx.lineCap = 'round'
+
+      ctx.beginPath()
+      ctx.moveTo(cx - half, cy - half)
+      ctx.lineTo(cx + half, cy + half)
+      ctx.stroke()
+
+      ctx.beginPath()
+      ctx.moveTo(cx + half, cy - half)
+      ctx.lineTo(cx - half, cy + half)
+      ctx.stroke()
+    }
+
+    function drawO(cx, cy) {
+      const radius = CELL_SIZE / 2 - MARK_PADDING
+      ctx.strokeStyle = COLORS.o
+      ctx.lineWidth = MARK_LINE_WIDTH
+      ctx.lineCap = 'round'
+
+      ctx.beginPath()
+      ctx.arc(cx, cy, radius, 0, Math.PI * 2)
+      ctx.stroke()
+    }
+
+    function drawWinLine() {
+      if (!state.winPattern) return
+
+      const [[r0, c0], , [r2, c2]] = state.winPattern
+      const startX = c0 * CELL_SIZE + CELL_SIZE / 2
+      const startY = r0 * CELL_SIZE + CELL_SIZE / 2
+      const endX = c2 * CELL_SIZE + CELL_SIZE / 2
+      const endY = r2 * CELL_SIZE + CELL_SIZE / 2
+
+      ctx.strokeStyle = COLORS.winLine
+      ctx.lineWidth = WIN_LINE_WIDTH
+      ctx.lineCap = 'round'
+
+      ctx.beginPath()
+      ctx.moveTo(startX, startY)
+      ctx.lineTo(endX, endY)
+      ctx.stroke()
+    }
+
+    // ============ HUD & STATUS ============
+    function updateHUD() {
+      document.getElementById('x-score').textContent = state.scores.X
+      document.getElementById('o-score').textContent = state.scores.O
+      document.getElementById('draw-score').textContent = state.scores.draw
+    }
+
+    function updateStatus() {
+      const statusEl = document.getElementById('status')
+
+      if (state.gameState === 'gameOver') {
+        if (state.winner) {
+          statusEl.textContent = `Player ${state.winner} wins!`
+          statusEl.className = `status winner ${state.winner === 'X' ? 'x-turn' : 'o-turn'}`
+        } else {
+          statusEl.textContent = 'It\'s a draw!'
+          statusEl.className = 'status'
+        }
+      } else {
+        statusEl.textContent = `Player ${state.currentPlayer}'s turn`
+        statusEl.className = `status ${state.currentPlayer === 'X' ? 'x-turn' : 'o-turn'}`
+      }
+    }
+
+    // ============ INPUT HANDLING ============
+    function handleClick(x, y) {
+      if (state.gameState !== 'playing') return
+
+      const cell = getCellFromPosition(x, y)
+      if (!cell) return
+
+      const moved = makeMove(cell.row, cell.col)
+      if (moved) {
+        render()
+        updateStatus()
+      }
+    }
+
+    function handleHover(x, y) {
+      if (state.gameState !== 'playing') return
+
+      const cell = getCellFromPosition(x, y)
+      const prev = state.hoverCell
+
+      if (cell && (!prev || prev.row !== cell.row || prev.col !== cell.col)) {
+        state.hoverCell = cell
+        render()
+      } else if (!cell && prev) {
+        state.hoverCell = null
+        render()
+      }
+    }
+
+    // Mouse events
+    canvas.addEventListener('click', (e) => {
+      handleClick(e.clientX, e.clientY)
+    })
+
+    canvas.addEventListener('mousemove', (e) => {
+      handleHover(e.clientX, e.clientY)
+    })
+
+    canvas.addEventListener('mouseleave', () => {
+      state.hoverCell = null
+      render()
+    })
+
+    // Touch events
+    canvas.addEventListener('touchend', (e) => {
+      e.preventDefault()
+      const touch = e.changedTouches[0]
+      handleClick(touch.clientX, touch.clientY)
+    })
+
+    // ============ SCREEN MANAGEMENT ============
+    function startGame() {
+      state.board = createEmptyBoard()
+      state.currentPlayer = 'X'
+      state.gameState = 'playing'
+      state.winPattern = null
+      state.winner = null
+      state.hoverCell = null
+      updateStatus()
+      updateHUD()
+      render()
+    }
+
+    function resetScores() {
+      state.scores = { X: 0, O: 0, draw: 0 }
+      saveScores()
+      updateHUD()
+    }
+
+    // Start button
+    document.getElementById('start-btn').addEventListener('click', () => {
+      document.getElementById('start-screen').classList.add('hidden')
+      startGame()
+    })
+
+    // Restart button
+    document.getElementById('restart-btn').addEventListener('click', () => {
+      startGame()
+    })
+
+    // Reset scores button
+    document.getElementById('reset-btn').addEventListener('click', () => {
+      resetScores()
+    })
+
+    // Keyboard — press Enter or Space to restart when game over
+    document.addEventListener('keydown', (e) => {
+      if (state.gameState === 'gameOver' && (e.key === 'Enter' || e.key === ' ')) {
+        e.preventDefault()
+        startGame()
+      }
+    })
+
+    // ============ INITIALIZATION ============
+    updateHUD()
+    render()
+  </script>
+</body>
+</html>
