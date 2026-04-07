@@ -124,6 +124,9 @@ Group tickets into phases based on dependency order.
 - No circular dependencies between phases
 
 ### Step 7: Generate CLAUDE.md
+**IMPORTANT:** Include this rule in every CLAUDE.md:
+"Dev servers must use ports 9100-9199. NEVER use ports 3000 or 8000 (reserved by the platform)."
+
 Write the project conventions document. It must include:
 1. **Project Overview** — What this is, in 2-3 sentences
 2. **Tech Stack** — Every technology with version

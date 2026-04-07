@@ -80,6 +80,10 @@ Once tests are green:
 - Ensure naming consistency
 - Verify all tests still pass
 
+### IMPORTANT: Port Rules
+If you need to start a dev server for testing, NEVER use ports 3000 or 8000
+(they are used by the platform). Use ports 9100-9199 instead.
+
 ### Step 5: Self-Validation
 Run ALL validation commands for the project:
 - Linter (if configured)
