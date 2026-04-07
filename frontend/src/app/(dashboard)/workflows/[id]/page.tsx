@@ -107,14 +107,17 @@ function WorkflowDetailContent() {
       if (!res.ok) throw new Error("Failed to fetch");
       const data: WorkflowData = await res.json();
       setWorkflow(data);
-      // Auto-reconnect to last execution if we don't have one yet
-      if (data.lastExecutionId && !execution && !executionIdParam) {
-        fetchExecution(data.lastExecutionId);
+      // Auto-reconnect to last running or recent execution on page load
+      if (data.lastExecutionId && !executionIdParam && !executionRef.current) {
+        const execData = await fetchExecution(data.lastExecutionId);
+        if (execData) {
+          setExecution(execData);
+        }
       }
     } catch (err) {
       console.error("Failed to fetch workflow:", err);
     }
-  }, [workflowId]);
+  }, [workflowId, executionIdParam, fetchExecution]);
 
   const fetchExecution = useCallback(
     async (execId: string) => {
